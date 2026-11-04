@@ -182,15 +182,7 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
     if configured_owner_key and clean_key == str(configured_owner_key).strip().upper():
         return True, "👑 Owner VIP Verified! Infinite Unlimited Access & Neural AI Engine Activated.", 999999, "owner"
         
-    # 2. Promo Code for Job Hunter Pack ($10 - 100 Leads, Standard Templates)
-    if clean_key in ["REDACTED", "REDACTED"]:
-        return True, "🎉 Job Hunter Pack Activated! +100 Leads added to your account.", 100, "starter"
-        
-    # 3. Promo Code for Pro Career Hunter ($20 - 200 Leads + Full Neural AI Unlocked)
-    if clean_key in ["REDACTED", "REDACTED", "REDACTED"]:
-        return True, "🚀 Pro Career Hunter Activated! +200 Leads & Neural AI Personalization Unlocked.", 200, "pro"
-        
-    # 4. Check Supabase `licenses` table if configured
+    # 2. Check Supabase `licenses` table if configured (private custom keys)
     try:
         lic_res = supabase.table('licenses').select('*').eq('key', key).execute()
         if lic_res.data and len(lic_res.data) > 0:
