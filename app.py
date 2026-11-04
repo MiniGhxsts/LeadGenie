@@ -707,18 +707,51 @@ st.markdown("""
     
     .pricing-card {
         background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 12px;
-        padding: 24px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); display: flex; flex-direction: column; height: 100%;
+        padding: 24px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); display: flex; flex-direction: column;
+        justify-content: space-between; height: 550px; box-sizing: border-box; position: relative;
     }
     .pricing-card.popular {
-        border: 2px solid #2563EB; position: relative;
+        border: 2px solid #2563EB;
     }
     .pricing-badge {
         position: absolute; top: -12px; right: 18px; background-color: #2563EB; color: white;
         font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 3px 10px; border-radius: 20px;
+        letter-spacing: 0.05em; z-index: 10;
     }
-    .pricing-title { font-size: 20px; font-weight: 700; color: #111827; margin-bottom: 6px; }
-    .pricing-price { font-size: 36px; font-weight: 800; color: #111827; margin-bottom: 12px; }
-    .pricing-feature { font-size: 14px; color: #4B5563; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .pricing-title { font-size: 20px; font-weight: 700; color: #111827; margin-bottom: 4px; }
+    .pricing-subtitle { color: #6B7280; font-size: 13px; margin-bottom: 8px; min-height: 20px; }
+    .pricing-price { font-size: 34px; font-weight: 800; color: #111827; margin-bottom: 10px; }
+    .pricing-price-period { font-size: 14px; font-weight: 500; color: #6B7280; }
+    .pricing-divider { border: none; border-top: 1px solid #E5E7EB; margin: 10px 0 14px 0; }
+    .pricing-features { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; }
+    .pricing-feature { font-size: 13.5px; color: #4B5563; display: flex; align-items: flex-start; gap: 8px; line-height: 1.35; }
+    .pricing-feature-locked { color: #9CA3AF !important; }
+    .pricing-action { margin-top: auto; padding-top: 18px; }
+    .pricing-btn {
+        display: block; width: 100%; text-align: center; padding: 11px 0;
+        border-radius: 8px; font-size: 14px; font-weight: 700; text-decoration: none !important;
+        box-sizing: border-box; transition: all 0.15s ease-in-out;
+    }
+    .pricing-btn-popular {
+        background-color: #FF4B4B; color: #FFFFFF !important;
+        box-shadow: 0 2px 4px rgba(255, 75, 75, 0.25);
+    }
+    .pricing-btn-popular:hover {
+        background-color: #E03E3E; color: #FFFFFF !important;
+        transform: translateY(-1px); box-shadow: 0 4px 6px rgba(255, 75, 75, 0.35);
+    }
+    .pricing-btn-pro {
+        background-color: #2563EB; color: #FFFFFF !important;
+        box-shadow: 0 2px 4px rgba(37, 99, 235, 0.25);
+    }
+    .pricing-btn-pro:hover {
+        background-color: #1D4ED8; color: #FFFFFF !important;
+        transform: translateY(-1px); box-shadow: 0 4px 6px rgba(37, 99, 235, 0.35);
+    }
+    .pricing-btn-muted {
+        background-color: #F3F4F6; color: #4B5563 !important;
+        border: 1px solid #E5E7EB; cursor: default;
+    }
     
     .success-badge {
         background-color: #F8FAFC; color: #1E293B; padding: 12px 16px;
@@ -1323,61 +1356,79 @@ elif st.session_state.page == "Pricing & Plans":
     with plan_col1:
         st.markdown("""
             <div class="pricing-card">
-                <div class="pricing-title">Trial Level</div>
-                <div style="color: #6B7280; font-size: 13px; margin-bottom: 8px;">Explore LeadGenie</div>
-                <div class="pricing-price">$0</div>
-                <hr>
-                <div class="pricing-feature">✅ 10 Verified Leads</div>
-                <div class="pricing-feature">✅ Decision-Maker Regex Scraper</div>
-                <div class="pricing-feature">✅ Standard Outreach Email Templates</div>
-                <div class="pricing-feature">✅ Interactive CRM Database</div>
-                <div class="pricing-feature" style="color: #9CA3AF;">🔒 AI Match Score (Pro Only)</div>
-                <div class="pricing-feature" style="color: #9CA3AF;">🔒 AI Personalization (Pro Only)</div>
-                <div style="margin-top: auto; padding-top: 20px;">
-                    <div style="background-color: #F3F4F6; text-align: center; padding: 10px; border-radius: 6px; font-size: 14px; font-weight: 600; color: #4B5563;">
-                        Base Tier
+                <div>
+                    <div class="pricing-title">Trial Level</div>
+                    <div class="pricing-subtitle">Explore LeadGenie</div>
+                    <div class="pricing-price">$0</div>
+                    <hr class="pricing-divider">
+                    <div class="pricing-features">
+                        <div class="pricing-feature">✅ <b>10 Lead Searches</b></div>
+                        <div class="pricing-feature">✅ Decision-Maker Regex Scraper</div>
+                        <div class="pricing-feature">✅ Standard Outreach Email Templates</div>
+                        <div class="pricing-feature">✅ Interactive CRM Database</div>
+                        <div class="pricing-feature pricing-feature-locked">🔒 Master CRM Export (Paid Only)</div>
+                        <div class="pricing-feature pricing-feature-locked">🔒 AI Match Score (Pro Only)</div>
+                        <div class="pricing-feature pricing-feature-locked">🔒 AI Personalization (Pro Only)</div>
                     </div>
+                </div>
+                <div class="pricing-action">
+                    <div class="pricing-btn pricing-btn-muted">Current Base Tier</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
 
     with plan_col2:
-        st.markdown("""
+        st.markdown(f"""
             <div class="pricing-card popular">
                 <div class="pricing-badge">Most Popular</div>
-                <div class="pricing-title">Job Hunter Pack</div>
-                <div style="color: #6B7280; font-size: 13px; margin-bottom: 8px;">For active internship searchers</div>
-                <div class="pricing-price">$10 <span style="font-size: 14px; font-weight: 500; color: #6B7280;">one-time</span></div>
-                <hr>
-                <div class="pricing-feature">✅ <b>100 Verified Leads</b></div>
-                <div class="pricing-feature">✅ Priority Headless Domain Scraping</div>
-                <div class="pricing-feature">✅ Standard Outreach Email Payloads</div>
-                <div class="pricing-feature">✅ Full Master CRM (.xlsx) Export</div>
-                <div class="pricing-feature">✅ Direct Desktop Mail (.eml) ZIP</div>
-                <div class="pricing-feature">✅ Instant License Key Delivery</div>
-                <div class="pricing-feature" style="color: #9CA3AF;">🔒 AI Personalization (Pro Only)</div>
+                <div>
+                    <div class="pricing-title">Job Hunter Pack</div>
+                    <div class="pricing-subtitle">For active internship searchers</div>
+                    <div class="pricing-price">$10 <span class="pricing-price-period">one-time</span></div>
+                    <hr class="pricing-divider">
+                    <div class="pricing-features">
+                        <div class="pricing-feature">✅ <b>100 Lead Searches</b></div>
+                        <div class="pricing-feature">✅ Priority Headless Domain Scraping</div>
+                        <div class="pricing-feature">✅ Standard Outreach Email Payloads</div>
+                        <div class="pricing-feature">✅ Full Master CRM (.xlsx) Export</div>
+                        <div class="pricing-feature">✅ Direct Desktop Mail (.eml) ZIP</div>
+                        <div class="pricing-feature">✅ Instant License Key Delivery</div>
+                        <div class="pricing-feature pricing-feature-locked">🔒 AI Personalization (Pro Only)</div>
+                    </div>
+                </div>
+                <div class="pricing-action">
+                    <a href="{starter_checkout_url}" target="_blank" rel="noopener noreferrer" class="pricing-btn pricing-btn-popular">
+                        ⚡ Buy 100 Lead Searches ($10)
+                    </a>
+                </div>
             </div>
         """, unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.link_button("⚡ Buy 100 Leads ($10)", starter_checkout_url, type="primary", use_container_width=True)
 
     with plan_col3:
-        st.markdown("""
+        st.markdown(f"""
             <div class="pricing-card">
-                <div class="pricing-title">Pro Career Hunter</div>
-                <div style="color: #6B7280; font-size: 13px; margin-bottom: 8px;">Maximum outreach with AI</div>
-                <div class="pricing-price">$20 <span style="font-size: 14px; font-weight: 500; color: #6B7280;">one-time</span></div>
-                <hr>
-                <div class="pricing-feature">✅ <b>200 Verified Leads</b></div>
-                <div class="pricing-feature">✅ <b>⚡ LeadGenie Neural AI Email Personalization</b></div>
-                <div class="pricing-feature">✅ <b>🎯 AI Resume Match Scoring (1-100)</b></div>
-                <div class="pricing-feature">✅ Highest Priority Deep Web Crawling</div>
-                <div class="pricing-feature">✅ Multi-Metro Outreach Campaigns</div>
-                <div class="pricing-feature">✅ Lifetime Cloud Access & VIP Support</div>
+                <div>
+                    <div class="pricing-title">Pro Career Hunter</div>
+                    <div class="pricing-subtitle">Maximum outreach with AI</div>
+                    <div class="pricing-price">$20 <span class="pricing-price-period">one-time</span></div>
+                    <hr class="pricing-divider">
+                    <div class="pricing-features">
+                        <div class="pricing-feature">✅ <b>200 Lead Searches</b></div>
+                        <div class="pricing-feature">✅ <b>⚡ LeadGenie Neural AI Email Personalization</b></div>
+                        <div class="pricing-feature">✅ <b>🎯 AI Resume Match Scoring (1-100)</b></div>
+                        <div class="pricing-feature">✅ Highest Priority Deep Web Crawling</div>
+                        <div class="pricing-feature">✅ Multi-Metro Outreach Campaigns</div>
+                        <div class="pricing-feature">✅ Direct Desktop Mail (.eml) ZIP</div>
+                        <div class="pricing-feature">✅ Lifetime Cloud Access & VIP Support</div>
+                    </div>
+                </div>
+                <div class="pricing-action">
+                    <a href="{pro_checkout_url}" target="_blank" rel="noopener noreferrer" class="pricing-btn pricing-btn-pro">
+                        🚀 Buy 200 Lead Searches ($20)
+                    </a>
+                </div>
             </div>
         """, unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.link_button("🚀 Buy 200 Leads ($20)", pro_checkout_url, type="secondary", use_container_width=True)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     
