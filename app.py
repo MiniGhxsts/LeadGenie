@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import shutil
 import requests
@@ -51,6 +52,10 @@ DRAFTS_DIR = "Email_Drafts"
 if not os.path.exists(DRAFTS_DIR):
     os.makedirs(DRAFTS_DIR, exist_ok=True)
 
+USER_STORAGE_DIR = "user_storage"
+if not os.path.exists(USER_STORAGE_DIR):
+    os.makedirs(USER_STORAGE_DIR, exist_ok=True)
+
 # --- Supabase Initialization ---
 try:
     supabase_url = st.secrets["SUPABASE_URL"]
@@ -60,29 +65,118 @@ except Exception:
     st.error("Critical Error: Missing or invalid Supabase credentials in .streamlit/secrets.toml")
     st.stop()
 
+# --- Persistent User State Engine ---
+def load_user_state(user_id):
+    """
+    Loads persistent user state (tier, credits, resume, redeemed codes, and search config)
+    guaranteeing 100% data persistence across logouts, page reloads, and browser sessions.
+    """
+    state = {
+        "credits_remaining": 10,
+        "tier": "free",
+        "resume_text": "",
+        "resume_filename": "",
+        "redeemed_codes": [],
+        "target_location": "Mid-sized accounting firms in Rochester NY",
+        "target_role": "Audit Intern",
+        "leads_to_generate": 5
+    }
+    
+    # 1. Local persistent storage
+    user_file = os.path.join(USER_STORAGE_DIR, f"{user_id}.json")
+    if os.path.exists(user_file):
+        try:
+            with open(user_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                state.update(saved)
+        except Exception:
+            pass
+            
+    # 2. Supabase Auth User Metadata (syncs across devices)
+    if st.session_state.get('user') and hasattr(st.session_state.user, 'user_metadata'):
+        meta = st.session_state.user.user_metadata or {}
+        if meta.get('tier'): state['tier'] = meta['tier']
+        if meta.get('credits_remaining') is not None: state['credits_remaining'] = meta['credits_remaining']
+        if meta.get('resume_text'): state['resume_text'] = meta['resume_text']
+        if meta.get('resume_filename'): state['resume_filename'] = meta['resume_filename']
+        if meta.get('redeemed_codes'): state['redeemed_codes'] = meta['redeemed_codes']
+        if meta.get('target_location'): state['target_location'] = meta['target_location']
+        if meta.get('target_role'): state['target_role'] = meta['target_role']
+        if meta.get('leads_to_generate'): state['leads_to_generate'] = meta['leads_to_generate']
+
+    # 3. Supabase database table
+    try:
+        user_prof = supabase.table('user_profiles').select('*').eq('user_id', user_id).execute()
+        if user_prof.data and len(user_prof.data) > 0:
+            db_row = user_prof.data[0]
+            if db_row.get('target_location'): state['target_location'] = db_row['target_location']
+            if db_row.get('target_role'): state['target_role'] = db_row['target_role']
+            if db_row.get('leads_to_generate'): state['leads_to_generate'] = db_row['leads_to_generate']
+            if db_row.get('tier'): state['tier'] = db_row['tier']
+            if db_row.get('credits_remaining') is not None: state['credits_remaining'] = db_row['credits_remaining']
+    except Exception:
+        pass
+        
+    return state
+
+def save_user_state(user_id, updates):
+    """
+    Persists state updates to local disk cache, Supabase Auth user_metadata, and Supabase database.
+    """
+    # 1. Local storage file
+    user_file = os.path.join(USER_STORAGE_DIR, f"{user_id}.json")
+    current = {}
+    if os.path.exists(user_file):
+        try:
+            with open(user_file, "r", encoding="utf-8") as f:
+                current = json.load(f)
+        except Exception:
+            current = {}
+    current.update(updates)
+    try:
+        with open(user_file, "w", encoding="utf-8") as f:
+            json.dump(current, f, ensure_ascii=False)
+    except Exception:
+        pass
+        
+    # 2. Supabase Auth User Metadata (syncs with user account)
+    try:
+        meta_payload = {}
+        for k, v in updates.items():
+            if k == 'resume_text':
+                if len(v) < 30000: meta_payload[k] = v
+            else:
+                meta_payload[k] = v
+        if meta_payload:
+            supabase.auth.update_user({"data": meta_payload})
+    except Exception:
+        pass
+        
+    # 3. Supabase Database user_profiles table
+    try:
+        db_payload = {}
+        for k in ['target_location', 'target_role', 'leads_to_generate', 'credits_remaining', 'tier']:
+            if k in updates: db_payload[k] = updates[k]
+        if db_payload:
+            supabase.table('user_profiles').update(db_payload).eq('user_id', user_id).execute()
+    except Exception:
+        pass
+
 # --- License & Verification Engine ---
 def verify_lemon_squeezy_license(license_key, user_email=""):
     """
-    Validates license keys from Lemon Squeezy, Supabase licenses table, or Admin Master keys.
-    Returns: (is_valid: bool, message: str, credits: int, tier: str)
+    Validates license keys from Lemon Squeezy, Supabase licenses table, or Owner key.
+    The ONLY VIP key is 'REDACTED_KEY' (unlimited access).
     """
     key = license_key.strip()
     if not key:
         return False, "Please enter your Lemon Squeezy License Key or Order ID.", 0, "free"
     
-    # 1. Admin Master & VIP Testing Keys
-    master_keys = {
-        "GENIE-VIP": (300, "pro"),
-        "FOUNDER-2026": (500, "pro"),
-        "HUNTER-TEST": (100, "pro"),
-        "GENIE100": (100, "pro"),
-        "PRO300": (300, "pro")
-    }
-    if key.upper() in master_keys:
-        credits, tier = master_keys[key.upper()]
-        return True, "Authorized Master Key Verified!", credits, tier
+    # The ONLY Master VIP Key: REDACTED_KEY gives permanent infinite uses
+    if key.upper() == "REDACTED_KEY":
+        return True, "👑 Owner VIP Verified! Infinite Unlimited Access Activated.", 999999, "owner"
         
-    # 2. Check Supabase `licenses` table if configured
+    # Check Supabase `licenses` table if configured
     try:
         lic_res = supabase.table('licenses').select('*').eq('key', key).execute()
         if lic_res.data and len(lic_res.data) > 0:
@@ -99,7 +193,7 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
     except Exception:
         pass
 
-    # 3. Call official Lemon Squeezy License Activation API
+    # Call official Lemon Squeezy License Activation API
     try:
         res = requests.post(
             "https://api.lemonsqueezy.com/v1/licenses/activate",
@@ -120,10 +214,6 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
 # --- Gemini Quota & Health Monitoring ---
 @st.cache_data(ttl=120)
 def check_gemini_quota_status():
-    """
-    Actively queries Gemini with a tiny 1-word prompt to detect whether 
-    the API key has valid usage credits or has hit 429 RESOURCE_EXHAUSTED.
-    """
     if not GEMINI_API_KEY or not ai_client:
         return "MISSING_KEY", "Gemini API key is not configured.", "🔴"
     try:
@@ -186,7 +276,7 @@ if st.session_state.user is None:
                 st.markdown("##### Activate Your Paid Membership")
                 st.markdown("LeadGenie is a members-only application. Enter your Lemon Squeezy purchase License Key or Order ID below to create your specialized login.")
                 
-                license_key = st.text_input("Lemon Squeezy License Key / Order ID", placeholder="e.g. XXXXX-XXXXX-XXXXX or GENIE-VIP", key="signup_lic")
+                license_key = st.text_input("Lemon Squeezy License Key / Order ID", placeholder="e.g. XXXXX-XXXXX-XXXXX", key="signup_lic")
                 email = st.text_input("Your Email (used for receipt)", key="signup_email")
                 password = st.text_input("Create Password", type="password", key="signup_pass")
                 
@@ -200,7 +290,12 @@ if st.session_state.user is None:
                                 res = supabase.auth.sign_up({"email": email, "password": password})
                                 if res.user:
                                     st.session_state.user = res.user
-                                    # Provision profile with verified paid credits
+                                    # Save verified license in persistent storage
+                                    save_user_state(res.user.id, {
+                                        'credits_remaining': grant_credits,
+                                        'tier': grant_tier,
+                                        'redeemed_codes': [license_key.strip().upper()]
+                                    })
                                     try:
                                         supabase.table('user_profiles').insert({
                                             'user_id': res.user.id,
@@ -212,7 +307,7 @@ if st.session_state.user is None:
                                         }).execute()
                                     except Exception:
                                         pass
-                                    st.success(f"🎉 {lic_msg} Your account has been provisioned with {grant_credits} leads!")
+                                    st.success(f"🎉 {lic_msg} Your account has been provisioned!")
                                     time.sleep(1)
                                     st.rerun()
                                 else:
@@ -236,55 +331,20 @@ if 'successful_emails' not in st.session_state: st.session_state.successful_emai
 if 'show_success_banner' not in st.session_state: st.session_state.show_success_banner = False
 if 'last_processed_count' not in st.session_state: st.session_state.last_processed_count = 0
 if 'ai_quota_depleted' not in st.session_state: st.session_state.ai_quota_depleted = False
-
-if 'resume_text' not in st.session_state: st.session_state.resume_text = "" 
-if 'resume_filename' not in st.session_state: st.session_state.resume_filename = ""
 if 'drafts_memory' not in st.session_state: st.session_state.drafts_memory = {}
+if 'page' not in st.session_state: st.session_state.page = "Dashboard"
 
-if 'page' not in st.session_state:
-    st.session_state.page = "Dashboard"
-
-# Load Cloud Preferences & Credit Quotas safely
+# Load Persistent User Preferences, Saved Resume, and Quotas
 if 'config_loaded' not in st.session_state:
-    try:
-        user_prof = supabase.table('user_profiles').select('*').eq('user_id', st.session_state.user.id).execute()
-        if user_prof.data:
-            profile = user_prof.data[0]
-            st.session_state.input_location = profile.get('target_location', "Mid-sized accounting firms in Rochester NY")
-            st.session_state.input_role = profile.get('target_role', "Audit Intern")
-            st.session_state.input_num = profile.get('leads_to_generate', 5)
-            
-            raw_credits = profile.get('credits_remaining')
-            st.session_state.credits_remaining = int(raw_credits) if raw_credits is not None else 10
-            st.session_state.tier = profile.get('tier', 'free')
-        else:
-            st.session_state.input_location = "Mid-sized accounting firms in Rochester NY"
-            st.session_state.input_role = "Audit Intern"
-            st.session_state.input_num = 5
-            st.session_state.credits_remaining = 10
-            st.session_state.tier = 'free'
-            try:
-                supabase.table('user_profiles').insert({
-                    'user_id': st.session_state.user.id,
-                    'target_location': st.session_state.input_location,
-                    'target_role': st.session_state.input_role,
-                    'leads_to_generate': st.session_state.input_num,
-                    'credits_remaining': 10,
-                    'tier': 'free'
-                }).execute()
-            except Exception:
-                supabase.table('user_profiles').insert({
-                    'user_id': st.session_state.user.id,
-                    'target_location': st.session_state.input_location,
-                    'target_role': st.session_state.input_role,
-                    'leads_to_generate': st.session_state.input_num
-                }).execute()
-    except Exception:
-        st.session_state.input_location = "Mid-sized accounting firms in Rochester NY"
-        st.session_state.input_role = "Audit Intern"
-        st.session_state.input_num = 5
-        st.session_state.credits_remaining = 10
-        st.session_state.tier = 'free'
+    user_state = load_user_state(st.session_state.user.id)
+    st.session_state.input_location = user_state.get('target_location', "Mid-sized accounting firms in Rochester NY")
+    st.session_state.input_role = user_state.get('target_role', "Audit Intern")
+    st.session_state.input_num = user_state.get('leads_to_generate', 5)
+    st.session_state.tier = user_state.get('tier', 'free')
+    st.session_state.credits_remaining = user_state.get('credits_remaining', 10)
+    st.session_state.resume_text = user_state.get('resume_text', "")
+    st.session_state.resume_filename = user_state.get('resume_filename', "")
+    st.session_state.redeemed_codes = user_state.get('redeemed_codes', [])
     st.session_state.config_loaded = True
 
 # --- Core Functions ---
@@ -311,7 +371,6 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     body = ""
     match_score = "N/A"
     
-    # Check if Gemini AI is active and not already known to be out of quota
     if resume_text and ai_client and not st.session_state.get('ai_quota_depleted', False):
         prompt = f"""
         You are an expert technical recruiter analyzing a candidate for a {target_role} role at {firm_name} near {location}.
@@ -343,7 +402,6 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
                 break  
             except Exception as e:
                 err_str = str(e).lower()
-                # Detect Quota Exhaustion or Billing Limits immediately
                 if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str or "billing" in err_str:
                     st.session_state.ai_quota_depleted = True
                     if status_ui:
@@ -362,12 +420,10 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     msg.set_content(body)
     safe_filename = "".join(x for x in firm_name if x.isalnum() or x in " _-") + ".eml"
     
-    # Store draft in memory for instant multi-tenant ZIP generation
     if 'drafts_memory' not in st.session_state:
         st.session_state.drafts_memory = {}
     st.session_state.drafts_memory[safe_filename] = bytes(msg)
     
-    # Save to user-isolated directory on disk (Multi-tenant safe)
     user_key = str(user_id) if user_id else (str(st.session_state.user.id) if ('user' in st.session_state and st.session_state.user) else "shared")
     user_drafts_dir = os.path.join(DRAFTS_DIR, user_key)
     os.makedirs(user_drafts_dir, exist_ok=True)
@@ -683,17 +739,23 @@ else:
 
 st.sidebar.markdown(f'<div class="sidebar-heading">Account: {st.session_state.user.email}</div>', unsafe_allow_html=True)
 
-# User Credit Balance Card
-tier_label = st.session_state.tier.upper() if 'tier' in st.session_state else "FREE"
-credits_val = st.session_state.credits_remaining if 'credits_remaining' in st.session_state else 10
+# User Credit Balance Card (with Owner Infinite styling)
+if st.session_state.tier == "owner":
+    tier_label = "👑 OWNER"
+    tier_badge_style = "background: linear-gradient(135deg, #7C3AED, #4F46E5); color: white;"
+    credits_display = "∞ Unlimited"
+else:
+    tier_label = st.session_state.tier.upper()
+    tier_badge_style = "background-color:#DBEAFE; color:#1D4ED8;"
+    credits_display = f"{st.session_state.credits_remaining} <span style='font-size:12px; font-weight:500; color:#6B7280;'>Leads Left</span>"
 
 st.sidebar.markdown(f"""
     <div style="background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; margin: 0 8px 10px 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <span style="font-size:11px; font-weight:700; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em;">Balance</span>
-            <span style="background-color:#DBEAFE; color:#1D4ED8; font-size:10px; font-weight:700; padding:2px 8px; border-radius:12px;">{tier_label}</span>
+            <span style="{tier_badge_style} font-size:10px; font-weight:700; padding:2px 8px; border-radius:12px;">{tier_label}</span>
         </div>
-        <div style="font-size: 22px; font-weight: 700; color: #111827; margin: 4px 0;">{credits_val} <span style="font-size:12px; font-weight:500; color:#6B7280;">Leads Left</span></div>
+        <div style="font-size: 22px; font-weight: 700; color: #111827; margin: 4px 0;">{credits_display}</div>
     </div>
 """, unsafe_allow_html=True)
 
@@ -746,14 +808,15 @@ if st.sidebar.button("Logout", key="nav_logout", type="secondary", use_container
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("v1.2.0 | Members-Only Commercial Edition")
+st.sidebar.caption("v1.3.0 | Members-Only SaaS Edition")
 
 
 # --- Page 1: Dashboard ---
 if st.session_state.page == "Dashboard":
     
     if st.session_state.show_success_banner:
-        st.success(f"Pipeline Execution Complete. {st.session_state.last_processed_count} leads successfully generated. Please proceed to the Lead Database to review and export.")
+        msg = st.session_state.get('success_message', f"Pipeline Execution Complete. {st.session_state.last_processed_count} leads successfully generated.")
+        st.success(msg)
         st.session_state.show_success_banner = False 
     
     st.title("Outreach Dashboard")
@@ -776,7 +839,14 @@ if st.session_state.page == "Dashboard":
         with st.container(border=True):
             
             # Live Credit Status Indicator
-            if st.session_state.credits_remaining <= 0:
+            if st.session_state.tier == "owner":
+                st.markdown("""
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:12px 16px; background: linear-gradient(135deg, #1E1B4B 0%, #312E81 100%); border-radius:8px; color:white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <span style="font-weight:700; font-size:14px; letter-spacing:0.02em;">👑 Owner VIP Account: <b>∞ Unlimited Searches & Leads</b></span>
+                        <span style="font-size:12px; font-weight:700; background:rgba(255,255,255,0.2); padding:3px 10px; border-radius:12px;">OWNER</span>
+                    </div>
+                """, unsafe_allow_html=True)
+            elif st.session_state.credits_remaining <= 0:
                 st.error("🚨 **Out of Credits:** You have 0 leads remaining. Please upgrade your plan to run searches.")
             elif st.session_state.credits_remaining < st.session_state.input_num:
                 st.warning(f"⚠️ **Low Balance:** You have **{st.session_state.credits_remaining}** leads remaining, but requested {st.session_state.input_num}. The pipeline will stop once credits run out.")
@@ -788,32 +858,40 @@ if st.session_state.page == "Dashboard":
                     </div>
                 """, unsafe_allow_html=True)
             
-            # Quick-Activation Box for existing users on the Free tier
-            if st.session_state.tier == 'free':
-                with st.expander("🔑 Have a License Key or want to claim 300 VIP Leads?", expanded=True):
-                    st.markdown("Enter `GENIE-VIP` below to instantly upgrade this existing account to 300 leads:")
+            # One-Time Code Redemption Box (for Owner Key or Lemon Squeezy Keys)
+            if st.session_state.tier != "owner":
+                with st.expander("🔑 Activate VIP Code or Lemon Squeezy License", expanded=False):
                     c_code, c_btn = st.columns([3, 1])
                     with c_code:
-                        dash_code = st.text_input("License Key", value="GENIE-VIP", key="dash_promo_code", label_visibility="collapsed").strip().upper()
+                        dash_code = st.text_input("Enter Key", placeholder="e.g. REDACTED_KEY or License Key", key="dash_promo_code", label_visibility="collapsed").strip().upper()
                     with c_btn:
                         if st.button("Apply", key="dash_apply_btn", use_container_width=True):
-                            is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(dash_code, str(st.session_state.user.email))
-                            if is_val:
-                                st.session_state.credits_remaining = add_credits
-                                st.session_state.tier = add_tier
-                                try:
-                                    supabase.table('user_profiles').update({
-                                        'credits_remaining': st.session_state.credits_remaining,
-                                        'tier': add_tier
-                                    }).eq('user_id', st.session_state.user.id).execute()
-                                except Exception:
-                                    pass
-                                st.success(f"🎉 Upgraded! You now have {add_credits} Leads ({add_tier.upper()}).")
-                                time.sleep(1)
-                                st.rerun()
+                            redeemed_list = [c.upper() for c in st.session_state.get('redeemed_codes', [])]
+                            if dash_code in redeemed_list:
+                                st.error(f"❌ The code '{dash_code}' has already been redeemed for this account. Each code can only be used once.")
                             else:
-                                st.error(f"❌ {msg}")
-
+                                is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(dash_code, str(st.session_state.user.email))
+                                if is_val:
+                                    redeemed_list.append(dash_code)
+                                    st.session_state.redeemed_codes = redeemed_list
+                                    if add_tier == "owner":
+                                        st.session_state.tier = "owner"
+                                        st.session_state.credits_remaining = 999999
+                                    else:
+                                        st.session_state.tier = add_tier
+                                        st.session_state.credits_remaining += add_credits
+                                    
+                                    save_user_state(st.session_state.user.id, {
+                                        'credits_remaining': st.session_state.credits_remaining,
+                                        'tier': st.session_state.tier,
+                                        'redeemed_codes': redeemed_list
+                                    })
+                                    st.success(f"🎉 {msg}")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+            
             search_query = st.text_input("Target Location & Industry", value=st.session_state.input_location)
             
             col_inner1, col_inner2 = st.columns(2)
@@ -823,12 +901,19 @@ if st.session_state.page == "Dashboard":
                 default_idx = 0 if st.session_state.input_num == 5 else 1
                 num_leads = st.selectbox("Leads to Generate", options=[5, 10], index=default_idx)
                 
-            st.session_state.input_location = search_query
-            st.session_state.input_role = target_role
-            st.session_state.input_num = num_leads
+            # Persist search configuration changes
+            if search_query != st.session_state.input_location or target_role != st.session_state.input_role or num_leads != st.session_state.input_num:
+                st.session_state.input_location = search_query
+                st.session_state.input_role = target_role
+                st.session_state.input_num = num_leads
+                save_user_state(st.session_state.user.id, {
+                    'target_location': search_query,
+                    'target_role': target_role,
+                    'leads_to_generate': num_leads
+                })
                 
             st.markdown("---")
-            st.markdown("**Resume Context (Recommended)**")
+            st.markdown("**Resume Context (Saved Permanently)**")
             
             if st.session_state.resume_text != "":
                 st.markdown(f'<div class="success-badge">📄 <b>Attached File:</b> {st.session_state.resume_filename}</div>', unsafe_allow_html=True)
@@ -839,20 +924,29 @@ if st.session_state.page == "Dashboard":
                     if st.button("Clear Resume", use_container_width=True):
                         st.session_state.resume_text = ""
                         st.session_state.resume_filename = ""
+                        save_user_state(st.session_state.user.id, {
+                            'resume_text': "",
+                            'resume_filename': ""
+                        })
                         st.rerun()
                     st.markdown('</div>', unsafe_allow_html=True)
             else:
                 uploaded_file = st.file_uploader("Upload PDF or TXT to enable profile matching and dynamic email synthesis.", type=["pdf", "txt"], label_visibility="collapsed")
                 
                 if uploaded_file is not None:
-                    st.session_state.resume_text = extract_resume_text(uploaded_file)
+                    extracted_text = extract_resume_text(uploaded_file)
+                    st.session_state.resume_text = extracted_text
                     st.session_state.resume_filename = uploaded_file.name
+                    save_user_state(st.session_state.user.id, {
+                        'resume_text': extracted_text,
+                        'resume_filename': uploaded_file.name
+                    })
                     st.rerun()
             
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Action Button: Guarded by credit balance
-            is_out_of_credits = (st.session_state.credits_remaining <= 0)
+            # Action Button: Guarded by credit balance (Owner is never blocked)
+            is_out_of_credits = (st.session_state.tier != "owner" and st.session_state.credits_remaining <= 0)
             if is_out_of_credits:
                 submit_button = False
                 if st.button("💳 Upgrade Plan to Continue", type="primary", use_container_width=True):
@@ -913,16 +1007,12 @@ if st.session_state.page == "Dashboard":
     if submit_button:
         st.warning("⚠️ **Pipeline Active:** Please remain on this tab until completion. Navigating to another tab will cancel the current search.")
         
-        try:
-            supabase.table('user_profiles').update({
-                'target_location': search_query,
-                'target_role': target_role,
-                'leads_to_generate': num_leads
-            }).eq('user_id', st.session_state.user.id).execute()
-        except Exception:
-            pass
+        save_user_state(st.session_state.user.id, {
+            'target_location': search_query,
+            'target_role': target_role,
+            'leads_to_generate': num_leads
+        })
             
-        # Multi-tenant safe file initialization: isolate by user ID
         user_key = str(st.session_state.user.id)
         user_drafts_dir = os.path.join(DRAFTS_DIR, user_key)
         if os.path.exists(user_drafts_dir):
@@ -939,27 +1029,47 @@ if st.session_state.page == "Dashboard":
         progress_bar = progress_ui.progress(0.0)
         
         url = "https://places.googleapis.com/v1/places:searchText"
-        headers = {"Content-Type": "application/json", "X-Goog-Api-Key": PLACES_API_KEY, "X-Goog-FieldMask": "places.displayName.text,places.formattedAddress,places.websiteUri"}
-        response = requests.post(url, headers=headers, json={"textQuery": search_query, "maxResultCount": 20})
+        headers = {
+            "Content-Type": "application/json", 
+            "X-Goog-Api-Key": PLACES_API_KEY, 
+            "X-Goog-FieldMask": "places.displayName.text,places.formattedAddress,places.websiteUri,nextPageToken"
+        }
         
-        if response.status_code != 200:
-            st.error("API Error. Verify system configuration.")
-        else:
-            places = response.json().get('places', [])
-            processed = 0
+        try:
+            existing_db = supabase.table('leads').select('website').eq('user_id', st.session_state.user.id).execute()
+            saved_websites = [row['website'] for row in existing_db.data] if existing_db.data else []
+        except Exception:
+            saved_websites = []
             
-            try:
-                existing_db = supabase.table('leads').select('website').eq('user_id', st.session_state.user.id).execute()
-                saved_websites = [row['website'] for row in existing_db.data] if existing_db.data else []
-            except Exception:
-                saved_websites = []
+        processed = 0
+        next_page_token = None
+        page_num = 1
+        max_pages = 4  # Paginate across up to 80 businesses to ensure requested lead count is satisfied
+        
+        while processed < num_leads and page_num <= max_pages:
+            status_ui.info(f"Querying Google Places (Batch {page_num}) for: {search_query}...")
             
+            payload = {"textQuery": search_query, "maxResultCount": 20}
+            if next_page_token:
+                payload["pageToken"] = next_page_token
+                time.sleep(1) # Pacing between pages
+                
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code != 200:
+                st.error(f"Google Places API Error (Status {response.status_code}).")
+                break
+                
+            res_data = response.json()
+            places = res_data.get('places', [])
+            if not places:
+                break
+                
             for idx, place in enumerate(places):
                 if processed >= num_leads: break
-                if st.session_state.credits_remaining <= 0:
+                if st.session_state.tier != "owner" and st.session_state.credits_remaining <= 0:
                     status_ui.warning("⚡ Credit limit reached during search. Ending batch.")
                     break
-                
+                    
                 name = place.get('displayName', {}).get('text', 'Unknown Name')
                 address = place.get('formattedAddress', 'No address')
                 website = place.get('websiteUri', 'No website')
@@ -967,9 +1077,10 @@ if st.session_state.page == "Dashboard":
                 
                 if website != 'No website':
                     if website in saved_websites: continue
-                        
+                    saved_websites.append(website)
+                    
                     status_ui.info(f"Deep scraping website architecture: {name}...")
-                    progress_bar.progress((processed + 0.2) / num_leads)
+                    progress_bar.progress(min(1.0, (processed + 0.2) / num_leads))
                     
                     hr_name, hr_email = get_hr_contact(website, search_query)
                     
@@ -979,11 +1090,11 @@ if st.session_state.page == "Dashboard":
                     else:
                         notes = ""
                         status_ui.info(f"AI synthesizing personalized outreach for: {name}...")
-                        progress_bar.progress((processed + 0.6) / num_leads)
+                        progress_bar.progress(min(1.0, (processed + 0.6) / num_leads))
                         
                         match_score = create_eml_draft(name, hr_name, hr_email, city_location, target_role, st.session_state.resume_text, user_id=st.session_state.user.id, status_ui=status_ui)
                         st.session_state.successful_emails += 1
-                    
+                        
                     try:
                         supabase.table('leads').insert({
                             "user_id": st.session_state.user.id,
@@ -998,24 +1109,33 @@ if st.session_state.page == "Dashboard":
                         }).execute()
                     except Exception:
                         pass
-                    
-                    # Deduct 1 credit per processed lead & sync with Supabase
+                        
                     processed += 1
-                    st.session_state.credits_remaining = max(0, st.session_state.credits_remaining - 1)
-                    try:
-                        supabase.table('user_profiles').update({
-                            'credits_remaining': st.session_state.credits_remaining
-                        }).eq('user_id', st.session_state.user.id).execute()
-                    except Exception:
-                        pass
                     
-                    progress_bar.progress(processed / num_leads)
+                    # Deduct credits only if NOT owner
+                    if st.session_state.tier != "owner":
+                        st.session_state.credits_remaining = max(0, st.session_state.credits_remaining - 1)
+                        save_user_state(st.session_state.user.id, {'credits_remaining': st.session_state.credits_remaining})
+                        
+                    progress_bar.progress(min(1.0, processed / num_leads))
                     st.session_state.last_processed_count = processed
                     
-            status_ui.empty()
-            progress_ui.empty()
-            st.session_state.show_success_banner = True
-            st.rerun()
+            next_page_token = res_data.get('nextPageToken')
+            if not next_page_token or processed >= num_leads:
+                break
+            page_num += 1
+            
+        status_ui.empty()
+        progress_ui.empty()
+        st.session_state.last_processed_count = processed
+        
+        if processed < num_leads:
+            st.session_state.success_message = f"Pipeline Execution Complete. {processed} new leads generated. (Note: Google Places exhausted all available uncontacted businesses in this location matching '{search_query}')."
+        else:
+            st.session_state.success_message = f"Pipeline Execution Complete. {processed} leads successfully generated. Please proceed to the Lead Database to review and export."
+            
+        st.session_state.show_success_banner = True
+        st.rerun()
 
 # --- Page 2: Lead Database (Interactive Layout) ---
 elif st.session_state.page == "Lead Database":
@@ -1075,7 +1195,6 @@ elif st.session_state.page == "Lead Database":
             )
             
         with col2:
-            # Multi-tenant safe: export from session memory or user's isolated folder
             user_key = str(st.session_state.user.id)
             user_drafts_dir = os.path.join(DRAFTS_DIR, user_key)
             has_memory_drafts = ('drafts_memory' in st.session_state and len(st.session_state.drafts_memory) > 0)
@@ -1107,8 +1226,6 @@ elif st.session_state.page == "Lead Database":
         if st.button("Clear Session Cache", type="secondary"):
             st.session_state.total_searches = 0
             st.session_state.successful_emails = 0
-            st.session_state.resume_text = ""
-            st.session_state.resume_filename = ""
             if 'drafts_memory' in st.session_state:
                 st.session_state.drafts_memory.clear()
             user_key = str(st.session_state.user.id)
@@ -1126,13 +1243,14 @@ elif st.session_state.page == "Pricing & Plans":
     st.markdown("---")
     
     # Balance Banner
-    current_tier = st.session_state.tier.upper()
-    current_credits = st.session_state.credits_remaining
+    current_tier = "👑 OWNER" if st.session_state.tier == "owner" else st.session_state.tier.upper()
+    current_credits = "∞ Unlimited" if st.session_state.tier == "owner" else f"{st.session_state.credits_remaining} Leads Available"
+    
     st.markdown(f"""
         <div class="credit-badge">
             <div>
                 <div style="font-size: 13px; opacity: 0.9; text-transform: uppercase; font-weight: 600;">Active Account Balance</div>
-                <div style="font-size: 26px; font-weight: 800;">{current_credits} Leads Available</div>
+                <div style="font-size: 26px; font-weight: 800;">{current_credits}</div>
             </div>
             <div style="text-align: right;">
                 <div style="font-size: 12px; opacity: 0.9;">Plan Level</div>
@@ -1141,7 +1259,6 @@ elif st.session_state.page == "Pricing & Plans":
         </div>
     """, unsafe_allow_html=True)
     
-    # Construct Lemon Squeezy Checkout URLs with user metadata
     lemon_user_id = str(st.session_state.user.id)
     lemon_email = str(st.session_state.user.email)
     
@@ -1164,7 +1281,7 @@ elif st.session_state.page == "Pricing & Plans":
                 <div class="pricing-feature">✅ Interactive CRM Database</div>
                 <div style="margin-top: auto; padding-top: 20px;">
                     <div style="background-color: #F3F4F6; text-align: center; padding: 10px; border-radius: 6px; font-size: 14px; font-weight: 600; color: #4B5563;">
-                        Current / Base Tier
+                        Base Tier
                     </div>
                 </div>
             </div>
@@ -1209,30 +1326,39 @@ elif st.session_state.page == "Pricing & Plans":
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     
-    # Instant License / Promo Code Redemption
+    # One-Time License / Promo Code Redemption
     with st.expander("🔑 Have a Promo Code or Lemon Squeezy Order #? Click to Redeem", expanded=False):
-        st.markdown("If you completed checkout or received an additional promotional grant, enter your activation key below to immediately add leads to your account.")
+        st.markdown("Enter your activation key below to add leads or activate special access on your account (each code can only be used once per account).")
         code_col, btn_col = st.columns([3, 1])
         with code_col:
-            promo_code = st.text_input("Activation / Promo Key", placeholder="e.g. GENIE-VIP or Order Ref", label_visibility="collapsed").strip().upper()
+            promo_code = st.text_input("Activation / Promo Key", placeholder="e.g. REDACTED_KEY or License Key", label_visibility="collapsed").strip().upper()
         with btn_col:
             if st.button("Redeem Code", use_container_width=True):
-                is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(promo_code, str(st.session_state.user.email))
-                if is_val:
-                    st.session_state.credits_remaining += add_credits
-                    st.session_state.tier = add_tier
-                    try:
-                        supabase.table('user_profiles').update({
-                            'credits_remaining': st.session_state.credits_remaining,
-                            'tier': add_tier
-                        }).eq('user_id', st.session_state.user.id).execute()
-                    except Exception:
-                        pass
-                    st.success(f"🎉 {msg} +{add_credits} Leads added to your account!")
-                    time.sleep(1)
-                    st.rerun()
+                redeemed_list = [c.upper() for c in st.session_state.get('redeemed_codes', [])]
+                if promo_code in redeemed_list:
+                    st.error(f"❌ The code '{promo_code}' has already been redeemed for this account. Each code can only be used once.")
                 else:
-                    st.error(f"❌ {msg}")
+                    is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(promo_code, str(st.session_state.user.email))
+                    if is_val:
+                        redeemed_list.append(promo_code)
+                        st.session_state.redeemed_codes = redeemed_list
+                        if add_tier == "owner":
+                            st.session_state.tier = "owner"
+                            st.session_state.credits_remaining = 999999
+                        else:
+                            st.session_state.tier = add_tier
+                            st.session_state.credits_remaining += add_credits
+                            
+                        save_user_state(st.session_state.user.id, {
+                            'credits_remaining': st.session_state.credits_remaining,
+                            'tier': st.session_state.tier,
+                            'redeemed_codes': redeemed_list
+                        })
+                        st.success(f"🎉 {msg}")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
 
     # Lemon Squeezy Configuration Guide for Store Owner
     if not LEMON_SQUEEZY_STARTER_URL:
