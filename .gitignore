@@ -1,0 +1,30 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables & secrets
+.env
+.streamlit/secrets.toml
+credentials.json
+token.json
+
+# Generated drafts & exports
+Email_Drafts/
+*.eml
+*.zip
+*.xlsx
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local session config
+leadgenie_config.json
