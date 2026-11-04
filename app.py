@@ -261,29 +261,81 @@ if st.session_state.user is None:
         st.markdown("<br>", unsafe_allow_html=True)
         
         with st.container(border=True):
-            auth_mode = st.radio("Access Gate", ["Member Sign In", "Activate Paid License"], horizontal=True)
+            auth_mode = st.radio("Access Gate", ["Sign In", "Create Free Account (10 Free Leads)", "Activate Paid License"], horizontal=True)
             st.markdown("---")
             
-            if auth_mode == "Member Sign In":
-                st.markdown("##### Existing Customer Login")
+            if auth_mode == "Sign In":
+                st.markdown("##### Welcome Back")
                 st.caption("Sign in with your registered account credentials.")
                 email = st.text_input("Account Email", key="login_email")
                 password = st.text_input("Password", type="password", key="login_pass")
                 
                 if st.button("Sign In to LeadGenie", type="primary", use_container_width=True):
-                    try:
-                        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                        st.session_state.user = res.user
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Sign In Failed: {e}")
+                    if not email or not password:
+                        st.warning("Please enter your email and password.")
+                    else:
+                        try:
+                            res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                            st.session_state.user = res.user
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Sign In Failed: {e}")
                         
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.caption("Don't have an account yet? Access is strictly paid. Switch to 'Activate Paid License' above with your Lemon Squeezy order key.")
+                st.caption("Don't have an account yet? Switch to **'Create Free Account'** above to get started with 10 free leads.")
+
+            elif auth_mode == "Create Free Account (10 Free Leads)":
+                st.markdown("##### Start Your Free Trial")
+                st.markdown("Create a free account to test LeadGenie. Get **10 free lead searches** with verified decision-maker emails and cold outreach drafts—no credit card required.")
                 
+                free_email = st.text_input("Your Email", key="free_email")
+                free_password = st.text_input("Create Password", type="password", key="free_pass")
+                
+                if st.button("Create Free Account & Start Searching", type="primary", use_container_width=True):
+                    if not free_email or not free_password:
+                        st.warning("Please fill in both Email and Password.")
+                    else:
+                        try:
+                            res = supabase.auth.sign_up({"email": free_email, "password": free_password})
+                            active_user = None
+                            try:
+                                sign_in_res = supabase.auth.sign_in_with_password({"email": free_email, "password": free_password})
+                                active_user = sign_in_res.user
+                            except Exception:
+                                active_user = res.user
+
+                            if active_user:
+                                st.session_state.user = active_user
+                                save_user_state(active_user.id, {
+                                    'credits_remaining': 10,
+                                    'tier': 'free',
+                                    'redeemed_codes': []
+                                })
+                                try:
+                                    supabase.table('user_profiles').insert({
+                                        'user_id': active_user.id,
+                                        'target_location': "Mid-sized accounting firms in New York NY",
+                                        'target_role': "Audit Intern",
+                                        'leads_to_generate': 5,
+                                        'credits_remaining': 10,
+                                        'tier': 'free'
+                                    }).execute()
+                                except Exception:
+                                    pass
+                                st.success("🎉 Account created! Welcome to your Free Trial (10 Leads Included).")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.info("Account created! Please check your email to confirm registration or sign in.")
+                        except Exception as e:
+                            st.error(f"Sign Up Error: {e}")
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.caption("Already purchased a license key? Switch to **'Activate Paid License'** above.")
+
             else: # "Activate Paid License"
-                st.markdown("##### Activate Your Paid Membership")
-                st.markdown("LeadGenie is a members-only application. Enter your Lemon Squeezy purchase License Key or Order ID below to create your specialized login.")
+                st.markdown("##### Activate Paid Membership")
+                st.markdown("Purchased a pack on Lemon Squeezy? Enter your License Key or Order ID below to create and provision your paid account.")
                 
                 license_key = st.text_input("Lemon Squeezy License Key / Order ID", placeholder="e.g. XXXXX-XXXXX-XXXXX", key="signup_lic")
                 email = st.text_input("Your Email (used for receipt)", key="signup_email")
@@ -297,18 +349,24 @@ if st.session_state.user is None:
                         if is_valid:
                             try:
                                 res = supabase.auth.sign_up({"email": email, "password": password})
-                                if res.user:
-                                    st.session_state.user = res.user
-                                    # Save verified license in persistent storage
-                                    save_user_state(res.user.id, {
+                                active_user = None
+                                try:
+                                    sign_in_res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                                    active_user = sign_in_res.user
+                                except Exception:
+                                    active_user = res.user
+
+                                if active_user:
+                                    st.session_state.user = active_user
+                                    save_user_state(active_user.id, {
                                         'credits_remaining': grant_credits,
                                         'tier': grant_tier,
                                         'redeemed_codes': [license_key.strip().upper()]
                                     })
                                     try:
                                         supabase.table('user_profiles').insert({
-                                            'user_id': res.user.id,
-                                            'target_location': "Mid-sized accounting firms in Rochester NY",
+                                            'user_id': active_user.id,
+                                            'target_location': "Mid-sized accounting firms in New York NY",
                                             'target_role': "Audit Intern",
                                             'leads_to_generate': 5,
                                             'credits_remaining': grant_credits,
@@ -326,10 +384,12 @@ if st.session_state.user is None:
                         else:
                             st.error(f"❌ {lic_msg}")
                             starter_url = LEMON_SQUEEZY_STARTER_URL or "https://lemonsqueezy.com"
+                            pro_url = LEMON_SQUEEZY_PRO_URL or "https://lemonsqueezy.com"
                             st.markdown(f"""
                                 <div style="margin-top:12px; padding:12px; background-color:#FEF2F2; border:1px solid #FCA5A5; border-radius:6px; font-size:13px; color:#991B1B;">
-                                    <b>Need a License?</b> This web app is private and paid. You must purchase an access pass to receive a license key.<br><br>
-                                    <a href="{starter_url}" target="_blank" style="color:#DC2626; font-weight:700; text-decoration:underline;">👉 Purchase Access on Lemon Squeezy ($19)</a>
+                                    <b>Need a License Key?</b> Purchase a credit pack on Lemon Squeezy to receive a key:<br><br>
+                                    <a href="{starter_url}" target="_blank" style="color:#DC2626; font-weight:700; text-decoration:underline; margin-right:12px;">👉 Job Hunter Pack ($10)</a>
+                                    <a href="{pro_url}" target="_blank" style="color:#DC2626; font-weight:700; text-decoration:underline;">👉 Pro Career Hunter ($20)</a>
                                 </div>
                             """, unsafe_allow_html=True)
     st.stop()
@@ -997,7 +1057,18 @@ if st.session_state.page == "Dashboard":
                     </div>
                 """, unsafe_allow_html=True)
             elif st.session_state.credits_remaining <= 0:
-                st.error("🚨 **Out of Credits:** You have 0 leads remaining. Please upgrade your plan to run searches.")
+                st.error("🚨 **Out of Credits:** You have 0 leads remaining. Please upgrade your plan on Lemon Squeezy to continue searching.")
+                starter_url = LEMON_SQUEEZY_STARTER_URL or "https://lemonsqueezy.com"
+                pro_url = LEMON_SQUEEZY_PRO_URL or "https://lemonsqueezy.com"
+                st.markdown(f"""
+                    <div style="margin-top:-6px; margin-bottom:12px; padding:12px 16px; background-color:#FEF2F2; border:1px solid #FECACA; border-radius:8px;">
+                        <div style="font-weight:700; color:#991B1B; font-size:13px;">⚡ Get more leads on Lemon Squeezy:</div>
+                        <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
+                            <a href="{starter_url}" target="_blank" style="background:#DC2626; color:white; padding:6px 14px; border-radius:6px; font-weight:700; font-size:13px; text-decoration:none;">👉 Buy 100 Leads ($10)</a>
+                            <a href="{pro_url}" target="_blank" style="background:#991B1B; color:white; padding:6px 14px; border-radius:6px; font-weight:700; font-size:13px; text-decoration:none;">👉 Buy 200 Leads + Neural AI ($20)</a>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
             elif st.session_state.credits_remaining < st.session_state.input_num:
                 st.warning(f"⚠️ **Low Balance:** You have **{st.session_state.credits_remaining}** leads remaining, but requested {st.session_state.input_num}. The pipeline will stop once credits run out.")
             elif st.session_state.tier == "pro":
@@ -1017,19 +1088,22 @@ if st.session_state.page == "Dashboard":
             else:
                 st.markdown(f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:10px 14px; background-color:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px;">
-                        <span style="font-weight:600; color:#334155; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b> (Trial Mode)</span>
-                        <span style="font-size:12px; color:#64748B; font-weight:700;">{st.session_state.tier.upper()}</span>
+                        <span style="font-weight:600; color:#334155; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b> (Free Trial)</span>
+                        <span style="font-size:12px; color:#64748B; font-weight:700;">FREE TRIAL</span>
                     </div>
                 """, unsafe_allow_html=True)
             
             # One-Time Code Redemption Box (for Owner Key or Lemon Squeezy Keys)
             if st.session_state.tier != "owner":
-                with st.expander("🔑 Activate License or Promo Code", expanded=False):
+                is_free_or_zero = (st.session_state.tier == "free" or st.session_state.credits_remaining <= 0)
+                expander_label = "🔑 Have a Lemon Squeezy License Key? Enter It Here" if is_free_or_zero else "🔑 Activate Another License or Code"
+                with st.expander(expander_label, expanded=is_free_or_zero):
+                    st.caption("Paste the license key from your Lemon Squeezy purchase receipt to instantly activate leads & features:")
                     c_code, c_btn = st.columns([3, 1])
                     with c_code:
-                        dash_code = st.text_input("Enter Key", placeholder="e.g. XXXXX-XXXXX-XXXXX", key="dash_promo_code", label_visibility="collapsed").strip().upper()
+                        dash_code = st.text_input("Enter License Key", placeholder="e.g. XXXXX-XXXXX-XXXXX", key="dash_promo_code", label_visibility="collapsed").strip().upper()
                     with c_btn:
-                        if st.button("Apply", key="dash_apply_btn", use_container_width=True):
+                        if st.button("Apply Key", key="dash_apply_btn", type="primary" if is_free_or_zero else "secondary", use_container_width=True):
                             redeemed_list = [c.upper() for c in st.session_state.get('redeemed_codes', [])]
                             if dash_code in redeemed_list:
                                 st.error(f"❌ The code '{dash_code}' has already been redeemed for this account. Each code can only be used once.")
