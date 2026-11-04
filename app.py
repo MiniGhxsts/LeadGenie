@@ -860,10 +860,10 @@ if st.session_state.page == "Dashboard":
             
             # One-Time Code Redemption Box (for Owner Key or Lemon Squeezy Keys)
             if st.session_state.tier != "owner":
-                with st.expander("🔑 Activate VIP Code or Lemon Squeezy License", expanded=False):
+                with st.expander("🔑 Activate License or Promo Code", expanded=False):
                     c_code, c_btn = st.columns([3, 1])
                     with c_code:
-                        dash_code = st.text_input("Enter Key", placeholder="e.g. REDACTED_KEY or License Key", key="dash_promo_code", label_visibility="collapsed").strip().upper()
+                        dash_code = st.text_input("Enter Key", placeholder="e.g. XXXXX-XXXXX-XXXXX", key="dash_promo_code", label_visibility="collapsed").strip().upper()
                     with c_btn:
                         if st.button("Apply", key="dash_apply_btn", use_container_width=True):
                             redeemed_list = [c.upper() for c in st.session_state.get('redeemed_codes', [])]
@@ -1331,7 +1331,7 @@ elif st.session_state.page == "Pricing & Plans":
         st.markdown("Enter your activation key below to add leads or activate special access on your account (each code can only be used once per account).")
         code_col, btn_col = st.columns([3, 1])
         with code_col:
-            promo_code = st.text_input("Activation / Promo Key", placeholder="e.g. REDACTED_KEY or License Key", label_visibility="collapsed").strip().upper()
+            promo_code = st.text_input("Activation / Promo Key", placeholder="e.g. XXXXX-XXXXX-XXXXX", label_visibility="collapsed").strip().upper()
         with btn_col:
             if st.button("Redeem Code", use_container_width=True):
                 redeemed_list = [c.upper() for c in st.session_state.get('redeemed_codes', [])]
