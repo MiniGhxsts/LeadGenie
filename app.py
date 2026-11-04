@@ -46,7 +46,7 @@ if GEMINI_API_KEY:
     ai_client = genai.Client(api_key=GEMINI_API_KEY)
 else:
     ai_client = None
-    st.error("System Error: Missing Gemini API Key in environment or secrets.")
+    st.error("System Error: Missing AI Engine Key in environment or secrets.")
 
 DRAFTS_DIR = "Email_Drafts"
 if not os.path.exists(DRAFTS_DIR):
@@ -175,15 +175,15 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
     
     # 1. Master Owner VIP Key (Permanent Infinite Access + AI Unlocked)
     if clean_key == "REDACTED_KEY":
-        return True, "👑 Owner VIP Verified! Infinite Unlimited Access & Gemini AI Activated.", 999999, "owner"
+        return True, "👑 Owner VIP Verified! Infinite Unlimited Access & Neural AI Engine Activated.", 999999, "owner"
         
     # 2. Promo Code for Job Hunter Pack ($10 - 100 Leads, Standard Templates)
     if clean_key in ["REDACTED", "REDACTED"]:
         return True, "🎉 Job Hunter Pack Activated! +100 Leads added to your account.", 100, "starter"
         
-    # 3. Promo Code for Pro Career Hunter ($20 - 200 Leads + Full Gemini AI Unlocked)
+    # 3. Promo Code for Pro Career Hunter ($20 - 200 Leads + Full Neural AI Unlocked)
     if clean_key in ["REDACTED", "REDACTED", "REDACTED"]:
-        return True, "🚀 Pro Career Hunter Activated! +200 Leads & Gemini AI Personalization Unlocked.", 200, "pro"
+        return True, "🚀 Pro Career Hunter Activated! +200 Leads & Neural AI Personalization Unlocked.", 200, "pro"
         
     # 4. Check Supabase `licenses` table if configured
     try:
@@ -223,30 +223,30 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
     except Exception as e:
         return False, f"License server verification error: {e}", 0, "free"
 
-# --- Gemini Quota & Health Monitoring ---
+# --- AI Engine Quota & Health Monitoring ---
 @st.cache_data(ttl=120)
 def check_gemini_quota_status():
     if not GEMINI_API_KEY or not ai_client:
-        return "MISSING_KEY", "Gemini API key is not configured.", "🔴"
+        return "MISSING_KEY", "AI engine key is not configured.", "🔴"
     try:
         test_resp = ai_client.models.generate_content(
             model=GEMINI_MODEL,
             contents="Say OK."
         )
         if test_resp and test_resp.text:
-            return "OPERATIONAL", "Gemini AI is operational and quota is active.", "🟢"
-        return "DEGRADED", "Gemini AI responded with empty output.", "🟡"
+            return "OPERATIONAL", "AI engine is operational and quota is active.", "🟢"
+        return "DEGRADED", "AI engine responded with empty output.", "🟡"
     except Exception as e:
         err_str = str(e).lower()
         if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
-            return "QUOTA_EXHAUSTED", "Google Gemini API has exhausted its usage credits or rate limit (429).", "🔴"
+            return "QUOTA_EXHAUSTED", "AI synthesis engine has exhausted its usage credits or rate limit (429).", "🔴"
         elif "billing" in err_str or "credit" in err_str:
-            return "BILLING_REQUIRED", "Google Cloud billing account requires active credits or payment method.", "🔴"
+            return "BILLING_REQUIRED", "AI cloud billing account requires active credits or payment method.", "🔴"
         elif "api_key" in err_str or "403" in err_str or "permission" in err_str:
-            return "INVALID_KEY", "Gemini API key is invalid or unauthorized.", "🔴"
+            return "INVALID_KEY", "AI engine key is invalid or unauthorized.", "🔴"
         elif "503" in err_str or "unavailable" in err_str:
-            return "HIGH_DEMAND", "Gemini AI is temporarily experiencing high server demand (503).", "🟡"
-        return "ERROR", f"Gemini error: {str(e)[:60]}", "🔴"
+            return "HIGH_DEMAND", "AI engine is temporarily experiencing high server demand (503).", "🟡"
+        return "ERROR", f"AI engine error: {str(e)[:60]}", "🔴"
 
 # --- Authentication Gate (Paid Members Only) ---
 if 'user' not in st.session_state:
@@ -383,7 +383,7 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     body = ""
     match_score = "N/A"
     
-    # AI Gate: Gemini AI is strictly reserved for Pro Career Hunter & Owner tiers
+    # AI Gate: Neural AI is strictly reserved for Pro Career Hunter & Owner tiers
     user_tier = st.session_state.get('tier', 'free')
     has_ai_access = (user_tier in ["pro", "owner"])
     
@@ -421,17 +421,17 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
                 if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str or "billing" in err_str:
                     st.session_state.ai_quota_depleted = True
                     if status_ui:
-                        status_ui.warning("🚨 Gemini AI Quota / Usage Credits Depleted! Falling back to standard high-converting template.")
+                        status_ui.warning("🚨 AI Quota / Usage Credits Depleted! Falling back to standard high-converting template.")
                     body = None
                     break
                 else:
                     if status_ui:
-                        status_ui.warning(f"⚠️ Gemini Connection: Retrying... ({attempt+1}/2)")
+                        status_ui.warning(f"⚠️ AI Connection: Retrying... ({attempt+1}/2)")
                     time.sleep(2)
                     body = None
 
     if not body:
-        # Standard high-converting outreach email (No Gemini AI credits consumed)
+        # Standard high-converting outreach email (No AI credits consumed)
         body = f"""{greeting}\n\nI am writing to express my strong interest in joining {firm_name} as a {target_role}. \n\nGiven your excellent reputation in the {location} area, I would welcome the opportunity to contribute my skills to your team. I have attached my resume for your review.\n\nThank you for your time.\n\nBest regards,\n[Your Name]"""
         if not has_ai_access:
             match_score = "🔒 Pro Feature" if resume_text else "N/A"
@@ -786,7 +786,7 @@ st.sidebar.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# Real-Time Gemini AI Quota Indicator in Sidebar
+# Real-Time AI Quota Indicator in Sidebar (Only shown for Pro & Owner tiers)
 ai_status_code, ai_status_desc, ai_status_icon = check_gemini_quota_status()
 if st.session_state.get('ai_quota_depleted', False) or ai_status_code in ["QUOTA_EXHAUSTED", "BILLING_REQUIRED"]:
     ai_sidebar_text = "🔴 AI: Quota Exhausted"
@@ -801,12 +801,13 @@ else:
     ai_sidebar_text = f"{ai_status_icon} AI: {ai_status_code}"
     ai_sidebar_color = "#DC2626"
 
-st.sidebar.markdown(f"""
-    <div style="background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 10px 12px; margin: 0 8px 14px 8px;">
-        <div style="font-size:10px; font-weight:700; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em;">AI Quota Health</div>
-        <div style="font-size:12px; font-weight:700; color:{ai_sidebar_color}; margin-top:2px;">{ai_sidebar_text}</div>
-    </div>
-""", unsafe_allow_html=True)
+if st.session_state.tier in ["pro", "owner"]:
+    st.sidebar.markdown(f"""
+        <div style="background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 10px 12px; margin: 0 8px 14px 8px;">
+            <div style="font-size:10px; font-weight:700; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em;">AI Quota Health</div>
+            <div style="font-size:12px; font-weight:700; color:{ai_sidebar_color}; margin-top:2px;">{ai_sidebar_text}</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 if st.sidebar.button("Dashboard", key="nav_dash", type="primary" if st.session_state.page == "Dashboard" else "secondary", use_container_width=True):
     st.session_state.page = "Dashboard"
@@ -849,11 +850,11 @@ if st.session_state.page == "Dashboard":
     st.title("Outreach Dashboard")
     st.markdown("Automate your lead generation pipeline by extracting decision-maker contacts and synthesizing custom outreach files.")
     
-    # Active Gemini Quota Exhaustion Banner
-    if st.session_state.get('ai_quota_depleted', False) or ai_status_code in ["QUOTA_EXHAUSTED", "BILLING_REQUIRED"]:
+    # Active AI Quota Exhaustion Banner (Only shown to Pro & Owner tiers)
+    if st.session_state.tier in ["pro", "owner"] and (st.session_state.get('ai_quota_depleted', False) or ai_status_code in ["QUOTA_EXHAUSTED", "BILLING_REQUIRED"]):
         st.error("""
-            🚨 **Notice to Users & Admin:** The connected Google Gemini AI engine has reached its quota limit or is out of usage credits.
-            * The pipeline will automatically generate structured high-converting template drafts without failing, but AI resume-match personalization is temporarily paused until credits are refilled in [Google AI Studio](https://aistudio.google.com/).
+            🚨 **Notice to Users & Admin:** The AI synthesis engine has reached its quota limit or is out of usage credits.
+            * The pipeline will automatically generate structured high-converting template drafts without failing, but AI resume-match personalization is temporarily paused until credits are replenished.
         """)
         
     st.caption("ℹ️ **Disclaimer:** LeadGenie actively scans domain architecture for public contact information. Organizations that strictly utilize gated web forms or conceal contact data will be flagged in the database as requiring manual submission.")
@@ -880,7 +881,7 @@ if st.session_state.page == "Dashboard":
             elif st.session_state.tier == "pro":
                 st.markdown(f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:10px 14px; background-color:#EFF6FF; border:1px solid #BFDBFE; border-radius:6px;">
-                        <span style="font-weight:600; color:#1E40AF; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b> (Gemini AI Active 🤖)</span>
+                        <span style="font-weight:600; color:#1E40AF; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b> (Neural AI Active 🤖)</span>
                         <span style="font-size:12px; color:#2563EB; font-weight:700;">PRO CAREER</span>
                     </div>
                 """, unsafe_allow_html=True)
@@ -1008,6 +1009,15 @@ if st.session_state.page == "Dashboard":
         except Exception:
             total_db_leads, success_count, success_rate = 0, 0, 0
         
+        ai_telemetry_card = ""
+        if st.session_state.tier in ["pro", "owner"]:
+            ai_telemetry_card = f"""
+                <div class="metric-card">
+                    <div class="metric-value" style="font-size: 18px; color:{ai_sidebar_color};">{ai_sidebar_text}</div>
+                    <div class="metric-label">AI Engine Health</div>
+                </div>
+            """
+
         st.markdown(f"""
             <div style="display: flex; flex-direction: column;">
                 <div class="metric-card">
@@ -1022,25 +1032,23 @@ if st.session_state.page == "Dashboard":
                     <div class="metric-value">{success_rate}%</div>
                     <div class="metric-label">Extraction Accuracy Rate</div>
                 </div>
-                <div class="metric-card">
-                    <div class="metric-value" style="font-size: 18px; color:{ai_sidebar_color};">{ai_sidebar_text}</div>
-                    <div class="metric-label">Gemini AI Quota Health</div>
-                </div>
+                {ai_telemetry_card}
             </div>
         """, unsafe_allow_html=True)
 
-        # AI Health diagnostic trigger
-        with st.expander("🩺 Test Gemini AI Connection"):
-            if st.button("Run Diagnostic Ping", use_container_width=True):
-                with st.spinner("Pinging Gemini API..."):
-                    try:
-                        t0 = time.time()
-                        ping_res = ai_client.models.generate_content(model=GEMINI_MODEL, contents="Hello")
-                        elapsed = round((time.time() - t0) * 1000)
-                        st.session_state.ai_quota_depleted = False
-                        st.success(f"✅ AI Engine Healthy! Latency: {elapsed}ms. Quota and credits are active.")
-                    except Exception as e:
-                        st.error(f"❌ Connection Failure: {e}")
+        # AI Health diagnostic trigger (Only for Pro Career Hunter & Owner tiers)
+        if st.session_state.tier in ["pro", "owner"]:
+            with st.expander("🩺 Test AI Engine Connection"):
+                if st.button("Run Diagnostic Ping", use_container_width=True):
+                    with st.spinner("Pinging AI Engine..."):
+                        try:
+                            t0 = time.time()
+                            ping_res = ai_client.models.generate_content(model=GEMINI_MODEL, contents="Hello")
+                            elapsed = round((time.time() - t0) * 1000)
+                            st.session_state.ai_quota_depleted = False
+                            st.success(f"✅ AI Engine Healthy! Latency: {elapsed}ms. Quota and credits are active.")
+                        except Exception as e:
+                            st.error(f"❌ Connection Failure: {e}")
 
         status_ui = st.empty()
         progress_ui = st.empty()
@@ -1361,7 +1369,7 @@ elif st.session_state.page == "Pricing & Plans":
                 <div class="pricing-price">$20 <span style="font-size: 14px; font-weight: 500; color: #6B7280;">one-time</span></div>
                 <hr>
                 <div class="pricing-feature">✅ <b>200 Verified Leads</b></div>
-                <div class="pricing-feature">✅ <b>⚡ Gemini 3.5 AI Email Personalization</b></div>
+                <div class="pricing-feature">✅ <b>⚡ LeadGenie Neural AI Email Personalization</b></div>
                 <div class="pricing-feature">✅ <b>🎯 AI Resume Match Scoring (1-100)</b></div>
                 <div class="pricing-feature">✅ Highest Priority Deep Web Crawling</div>
                 <div class="pricing-feature">✅ Multi-Metro Outreach Campaigns</div>
