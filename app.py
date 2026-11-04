@@ -165,18 +165,27 @@ def save_user_state(user_id, updates):
 # --- License & Verification Engine ---
 def verify_lemon_squeezy_license(license_key, user_email=""):
     """
-    Validates license keys from Lemon Squeezy, Supabase licenses table, or Owner key.
-    The ONLY VIP key is 'REDACTED_KEY' (unlimited access).
+    Validates license keys from Lemon Squeezy, Supabase licenses table, or Promo keys.
     """
     key = license_key.strip()
     if not key:
         return False, "Please enter your Lemon Squeezy License Key or Order ID.", 0, "free"
     
-    # The ONLY Master VIP Key: REDACTED_KEY gives permanent infinite uses
-    if key.upper() == "REDACTED_KEY":
-        return True, "👑 Owner VIP Verified! Infinite Unlimited Access Activated.", 999999, "owner"
+    clean_key = key.upper()
+    
+    # 1. Master Owner VIP Key (Permanent Infinite Access + AI Unlocked)
+    if clean_key == "REDACTED_KEY":
+        return True, "👑 Owner VIP Verified! Infinite Unlimited Access & Gemini AI Activated.", 999999, "owner"
         
-    # Check Supabase `licenses` table if configured
+    # 2. Promo Code for Job Hunter Pack ($10 - 100 Leads, Standard Templates)
+    if clean_key in ["REDACTED", "REDACTED"]:
+        return True, "🎉 Job Hunter Pack Activated! +100 Leads added to your account.", 100, "starter"
+        
+    # 3. Promo Code for Pro Career Hunter ($20 - 200 Leads + Full Gemini AI Unlocked)
+    if clean_key in ["REDACTED", "REDACTED", "REDACTED"]:
+        return True, "🚀 Pro Career Hunter Activated! +200 Leads & Gemini AI Personalization Unlocked.", 200, "pro"
+        
+    # 4. Check Supabase `licenses` table if configured
     try:
         lic_res = supabase.table('licenses').select('*').eq('key', key).execute()
         if lic_res.data and len(lic_res.data) > 0:
@@ -184,7 +193,7 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
             if lic.get('is_redeemed', False):
                 return False, "This license key has already been redeemed by another user.", 0, "free"
             credits = lic.get('credits', 100)
-            tier = lic.get('tier', 'pro')
+            tier = lic.get('tier', 'starter')
             try:
                 supabase.table('licenses').update({'is_redeemed': True, 'redeemed_by': user_email}).eq('key', key).execute()
             except Exception:
@@ -193,7 +202,7 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
     except Exception:
         pass
 
-    # Call official Lemon Squeezy License Activation API
+    # 5. Call official Lemon Squeezy License Activation API
     try:
         res = requests.post(
             "https://api.lemonsqueezy.com/v1/licenses/activate",
@@ -204,8 +213,11 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
             data = res.json()
             if data.get("activated"):
                 prod_name = data.get("meta", {}).get("product_name", "").lower()
-                credits = 300 if ("300" in prod_name or "pro" in prod_name) else 100
-                return True, "Lemon Squeezy License Successfully Activated!", credits, "pro"
+                if "200" in prod_name or "pro" in prod_name:
+                    credits, tier = 200, "pro"
+                else:
+                    credits, tier = 100, "starter"
+                return True, "Lemon Squeezy License Successfully Activated!", credits, tier
         err_msg = res.json().get("error", "License key not found or activation limit reached.")
         return False, f"License Verification Failed: {err_msg}", 0, "free"
     except Exception as e:
@@ -371,7 +383,11 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     body = ""
     match_score = "N/A"
     
-    if resume_text and ai_client and not st.session_state.get('ai_quota_depleted', False):
+    # AI Gate: Gemini AI is strictly reserved for Pro Career Hunter & Owner tiers
+    user_tier = st.session_state.get('tier', 'free')
+    has_ai_access = (user_tier in ["pro", "owner"])
+    
+    if has_ai_access and resume_text and ai_client and not st.session_state.get('ai_quota_depleted', False):
         prompt = f"""
         You are an expert technical recruiter analyzing a candidate for a {target_role} role at {firm_name} near {location}.
         Based on the resume below:
@@ -415,7 +431,10 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
                     body = None
 
     if not body:
+        # Standard high-converting outreach email (No Gemini AI credits consumed)
         body = f"""{greeting}\n\nI am writing to express my strong interest in joining {firm_name} as a {target_role}. \n\nGiven your excellent reputation in the {location} area, I would welcome the opportunity to contribute my skills to your team. I have attached my resume for your review.\n\nThank you for your time.\n\nBest regards,\n[Your Name]"""
+        if not has_ai_access:
+            match_score = "🔒 Pro Feature" if resume_text else "N/A"
 
     msg.set_content(body)
     safe_filename = "".join(x for x in firm_name if x.isalnum() or x in " _-") + ".eml"
@@ -744,6 +763,14 @@ if st.session_state.tier == "owner":
     tier_label = "👑 OWNER"
     tier_badge_style = "background: linear-gradient(135deg, #7C3AED, #4F46E5); color: white;"
     credits_display = "∞ Unlimited"
+elif st.session_state.tier == "pro":
+    tier_label = "⚡ PRO CAREER"
+    tier_badge_style = "background: linear-gradient(135deg, #2563EB, #1D4ED8); color: white;"
+    credits_display = f"{st.session_state.credits_remaining} <span style='font-size:12px; font-weight:500; color:#6B7280;'>Leads Left</span>"
+elif st.session_state.tier == "starter":
+    tier_label = "JOB HUNTER"
+    tier_badge_style = "background-color:#E0E7FF; color:#4338CA;"
+    credits_display = f"{st.session_state.credits_remaining} <span style='font-size:12px; font-weight:500; color:#6B7280;'>Leads Left</span>"
 else:
     tier_label = st.session_state.tier.upper()
     tier_badge_style = "background-color:#DBEAFE; color:#1D4ED8;"
@@ -850,11 +877,25 @@ if st.session_state.page == "Dashboard":
                 st.error("🚨 **Out of Credits:** You have 0 leads remaining. Please upgrade your plan to run searches.")
             elif st.session_state.credits_remaining < st.session_state.input_num:
                 st.warning(f"⚠️ **Low Balance:** You have **{st.session_state.credits_remaining}** leads remaining, but requested {st.session_state.input_num}. The pipeline will stop once credits run out.")
-            else:
+            elif st.session_state.tier == "pro":
                 st.markdown(f"""
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:10px 14px; background-color:#EFF6FF; border:1px solid #BFDBFE; border-radius:6px;">
-                        <span style="font-weight:600; color:#1E40AF; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b></span>
-                        <span style="font-size:12px; color:#2563EB; font-weight:600;">Plan: {st.session_state.tier.upper()}</span>
+                        <span style="font-weight:600; color:#1E40AF; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b> (Gemini AI Active 🤖)</span>
+                        <span style="font-size:12px; color:#2563EB; font-weight:700;">PRO CAREER</span>
+                    </div>
+                """, unsafe_allow_html=True)
+            elif st.session_state.tier == "starter":
+                st.markdown(f"""
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:10px 14px; background-color:#EEF2FF; border:1px solid #C7D2FE; border-radius:6px;">
+                        <span style="font-weight:600; color:#3730A3; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b> (Standard Templates)</span>
+                        <span style="font-size:12px; color:#4F46E5; font-weight:700;">JOB HUNTER</span>
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:10px 14px; background-color:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px;">
+                        <span style="font-weight:600; color:#334155; font-size:13px;">⚡ Search Credits: <b>{st.session_state.credits_remaining} Remaining</b> (Trial Mode)</span>
+                        <span style="font-size:12px; color:#64748B; font-weight:700;">{st.session_state.tier.upper()}</span>
                     </div>
                 """, unsafe_allow_html=True)
             
@@ -1089,7 +1130,11 @@ if st.session_state.page == "Dashboard":
                         match_score = "N/A"
                     else:
                         notes = ""
-                        status_ui.info(f"AI synthesizing personalized outreach for: {name}...")
+                        has_ai = (st.session_state.tier in ["pro", "owner"])
+                        if has_ai:
+                            status_ui.info(f"AI synthesizing personalized outreach for: {name}...")
+                        else:
+                            status_ui.info(f"Synthesizing standard outreach for: {name} (Upgrade to Pro for AI Personalization)...")
                         progress_bar.progress(min(1.0, (processed + 0.6) / num_leads))
                         
                         match_score = create_eml_draft(name, hr_name, hr_email, city_location, target_role, st.session_state.resume_text, user_id=st.session_state.user.id, status_ui=status_ui)
@@ -1276,9 +1321,10 @@ elif st.session_state.page == "Pricing & Plans":
                 <hr>
                 <div class="pricing-feature">✅ 10 Verified Leads</div>
                 <div class="pricing-feature">✅ Decision-Maker Regex Scraper</div>
-                <div class="pricing-feature">✅ AI Match Score (1-100)</div>
-                <div class="pricing-feature">✅ Ready-to-Send .eml Payloads</div>
+                <div class="pricing-feature">✅ Standard Outreach Email Templates</div>
                 <div class="pricing-feature">✅ Interactive CRM Database</div>
+                <div class="pricing-feature" style="color: #9CA3AF;">🔒 AI Match Score (Pro Only)</div>
+                <div class="pricing-feature" style="color: #9CA3AF;">🔒 AI Personalization (Pro Only)</div>
                 <div style="margin-top: auto; padding-top: 20px;">
                     <div style="background-color: #F3F4F6; text-align: center; padding: 10px; border-radius: 6px; font-size: 14px; font-weight: 600; color: #4B5563;">
                         Base Tier
@@ -1293,36 +1339,37 @@ elif st.session_state.page == "Pricing & Plans":
                 <div class="pricing-badge">Most Popular</div>
                 <div class="pricing-title">Job Hunter Pack</div>
                 <div style="color: #6B7280; font-size: 13px; margin-bottom: 8px;">For active internship searchers</div>
-                <div class="pricing-price">$19 <span style="font-size: 14px; font-weight: 500; color: #6B7280;">one-time</span></div>
+                <div class="pricing-price">$10 <span style="font-size: 14px; font-weight: 500; color: #6B7280;">one-time</span></div>
                 <hr>
                 <div class="pricing-feature">✅ <b>100 Verified Leads</b></div>
                 <div class="pricing-feature">✅ Priority Headless Domain Scraping</div>
-                <div class="pricing-feature">✅ Contextual Resume-Aligned Emails</div>
+                <div class="pricing-feature">✅ Standard Outreach Email Payloads</div>
                 <div class="pricing-feature">✅ Full Master CRM (.xlsx) Export</div>
                 <div class="pricing-feature">✅ Direct Desktop Mail (.eml) ZIP</div>
                 <div class="pricing-feature">✅ Instant License Key Delivery</div>
+                <div class="pricing-feature" style="color: #9CA3AF;">🔒 AI Personalization (Pro Only)</div>
             </div>
         """, unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
-        st.link_button("⚡ Buy 100 Leads ($19)", starter_checkout_url, type="primary", use_container_width=True)
+        st.link_button("⚡ Buy 100 Leads ($10)", starter_checkout_url, type="primary", use_container_width=True)
 
     with plan_col3:
         st.markdown("""
             <div class="pricing-card">
                 <div class="pricing-title">Pro Career Hunter</div>
-                <div style="color: #6B7280; font-size: 13px; margin-bottom: 8px;">Maximum outreach volume</div>
-                <div class="pricing-price">$39 <span style="font-size: 14px; font-weight: 500; color: #6B7280;">one-time</span></div>
+                <div style="color: #6B7280; font-size: 13px; margin-bottom: 8px;">Maximum outreach with AI</div>
+                <div class="pricing-price">$20 <span style="font-size: 14px; font-weight: 500; color: #6B7280;">one-time</span></div>
                 <hr>
-                <div class="pricing-feature">✅ <b>300 Verified Leads</b></div>
+                <div class="pricing-feature">✅ <b>200 Verified Leads</b></div>
+                <div class="pricing-feature">✅ <b>⚡ Gemini 3.5 AI Email Personalization</b></div>
+                <div class="pricing-feature">✅ <b>🎯 AI Resume Match Scoring (1-100)</b></div>
                 <div class="pricing-feature">✅ Highest Priority Deep Web Crawling</div>
                 <div class="pricing-feature">✅ Multi-Metro Outreach Campaigns</div>
-                <div class="pricing-feature">✅ Gemini 3.5 AI Synthesis</div>
-                <div class="pricing-feature">✅ Lifetime Cloud Access</div>
-                <div class="pricing-feature">✅ VIP Fast-Track Support</div>
+                <div class="pricing-feature">✅ Lifetime Cloud Access & VIP Support</div>
             </div>
         """, unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
-        st.link_button("🚀 Buy 300 Leads ($39)", pro_checkout_url, type="secondary", use_container_width=True)
+        st.link_button("🚀 Buy 200 Leads ($20)", pro_checkout_url, type="secondary", use_container_width=True)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     
