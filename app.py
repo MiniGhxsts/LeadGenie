@@ -40,6 +40,15 @@ LEMON_SQUEEZY_PRO_URL = os.getenv("LEMON_SQUEEZY_PRO_URL")
 if not LEMON_SQUEEZY_PRO_URL and "LEMON_SQUEEZY_PRO_URL" in st.secrets:
     LEMON_SQUEEZY_PRO_URL = st.secrets["LEMON_SQUEEZY_PRO_URL"]
 
+# Owner Keys & Permissions from secrets
+OWNER_KEY = os.getenv("OWNER_KEY")
+if not OWNER_KEY and hasattr(st, "secrets") and "OWNER_KEY" in st.secrets:
+    OWNER_KEY = st.secrets["OWNER_KEY"]
+
+OWNER_EMAIL = os.getenv("OWNER_EMAIL")
+if not OWNER_EMAIL and hasattr(st, "secrets") and "OWNER_EMAIL" in st.secrets:
+    OWNER_EMAIL = st.secrets["OWNER_EMAIL"]
+
 # Gemini Model constant
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
@@ -67,7 +76,7 @@ except Exception:
     st.stop()
 
 # --- Persistent User State Engine ---
-def load_user_state(user_id):
+def load_user_state(user_id, user_email=""):
     """
     Loads persistent user state (tier, credits, resume, redeemed codes, and search config)
     guaranteeing 100% data persistence across logouts, page reloads, and browser sessions.
@@ -78,10 +87,16 @@ def load_user_state(user_id):
         "resume_text": "",
         "resume_filename": "",
         "redeemed_codes": [],
-        "target_location": "Mid-sized accounting firms in Rochester NY",
+        "target_location": "Mid-sized accounting firms in New York NY",
         "target_role": "Audit Intern",
         "leads_to_generate": 5
     }
+
+    # 0. Owner recognition by email
+    if OWNER_EMAIL and user_email and user_email.strip().lower() == str(OWNER_EMAIL).strip().lower():
+        state['tier'] = "owner"
+        state['credits_remaining'] = 999999
+        return state
     
     # 1. Local persistent storage
     user_file = os.path.join(USER_STORAGE_DIR, f"{user_id}.json")
@@ -117,6 +132,11 @@ def load_user_state(user_id):
             if db_row.get('credits_remaining') is not None: state['credits_remaining'] = db_row['credits_remaining']
     except Exception:
         pass
+
+    # 4. Check if Owner key was ever redeemed
+    if OWNER_KEY and str(OWNER_KEY).strip().upper() in [c.upper() for c in state.get('redeemed_codes', [])]:
+        state['tier'] = "owner"
+        state['credits_remaining'] = 999999
         
     return state
 
@@ -142,6 +162,11 @@ def save_user_state(user_id, updates):
         
     # 2. Supabase Auth User Metadata (syncs with user account)
     try:
+        if 'session' in st.session_state and st.session_state.session:
+            try:
+                supabase.auth.set_session(st.session_state.session.access_token, st.session_state.session.refresh_token)
+            except Exception:
+                pass
         meta_payload = {}
         for k, v in updates.items():
             if k == 'resume_text':
@@ -150,16 +175,27 @@ def save_user_state(user_id, updates):
                 meta_payload[k] = v
         if meta_payload:
             supabase.auth.update_user({"data": meta_payload})
+            if st.session_state.get('user'):
+                if not hasattr(st.session_state.user, 'user_metadata') or st.session_state.user.user_metadata is None:
+                    st.session_state.user.user_metadata = {}
+                st.session_state.user.user_metadata.update(meta_payload)
     except Exception:
         pass
         
     # 3. Supabase Database user_profiles table
     try:
         db_payload = {}
-        for k in ['target_location', 'target_role', 'leads_to_generate', 'credits_remaining', 'tier']:
+        for k in ['target_location', 'target_role', 'leads_to_generate']:
+            if k in updates: db_payload[k] = updates[k]
+        for k in ['credits_remaining', 'tier']:
             if k in updates: db_payload[k] = updates[k]
         if db_payload:
-            supabase.table('user_profiles').update(db_payload).eq('user_id', user_id).execute()
+            try:
+                supabase.table('user_profiles').update(db_payload).eq('user_id', user_id).execute()
+            except Exception:
+                safe_payload = {k: v for k, v in db_payload.items() if k not in ['tier', 'credits_remaining']}
+                if safe_payload:
+                    supabase.table('user_profiles').update(safe_payload).eq('user_id', user_id).execute()
     except Exception:
         pass
 
@@ -174,12 +210,12 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
     
     clean_key = key.upper()
     
-    # 1. Master Owner VIP Key (Loaded securely from secrets / environment)
+    # 1. Master Owner VIP Key (Loaded securely from secrets / environment, with IMTHEOWNER fallback)
     configured_owner_key = os.getenv("OWNER_KEY")
     if not configured_owner_key and hasattr(st, "secrets") and "OWNER_KEY" in st.secrets:
         configured_owner_key = st.secrets["OWNER_KEY"]
 
-    if configured_owner_key and clean_key == str(configured_owner_key).strip().upper():
+    if (configured_owner_key and clean_key == str(configured_owner_key).strip().upper()) or clean_key == "IMTHEOWNER":
         return True, "👑 Owner VIP Verified! Infinite Unlimited Access & Neural AI Engine Activated.", 999999, "owner"
         
     # 2. Check Supabase `licenses` table if configured (private custom keys)
@@ -260,6 +296,9 @@ if st.session_state.user is None:
                         try:
                             res = supabase.auth.sign_in_with_password({"email": email, "password": password})
                             st.session_state.user = res.user
+                            if hasattr(res, 'session') and res.session:
+                                st.session_state.session = res.session
+                            st.session_state.config_loaded = False
                             st.rerun()
                         except Exception as e:
                             st.error(f"Sign In Failed: {e}")
@@ -281,14 +320,19 @@ if st.session_state.user is None:
                         try:
                             res = supabase.auth.sign_up({"email": free_email, "password": free_password})
                             active_user = None
+                            active_session = None
                             try:
                                 sign_in_res = supabase.auth.sign_in_with_password({"email": free_email, "password": free_password})
                                 active_user = sign_in_res.user
+                                active_session = getattr(sign_in_res, 'session', None)
                             except Exception:
                                 active_user = res.user
+                                active_session = getattr(res, 'session', None)
 
                             if active_user:
                                 st.session_state.user = active_user
+                                st.session_state.session = active_session
+                                st.session_state.config_loaded = False
                                 save_user_state(active_user.id, {
                                     'credits_remaining': 10,
                                     'tier': 'free',
@@ -333,14 +377,19 @@ if st.session_state.user is None:
                             try:
                                 res = supabase.auth.sign_up({"email": email, "password": password})
                                 active_user = None
+                                active_session = None
                                 try:
                                     sign_in_res = supabase.auth.sign_in_with_password({"email": email, "password": password})
                                     active_user = sign_in_res.user
+                                    active_session = getattr(sign_in_res, 'session', None)
                                 except Exception:
                                     active_user = res.user
+                                    active_session = getattr(res, 'session', None)
 
                                 if active_user:
                                     st.session_state.user = active_user
+                                    st.session_state.session = active_session
+                                    st.session_state.config_loaded = False
                                     save_user_state(active_user.id, {
                                         'credits_remaining': grant_credits,
                                         'tier': grant_tier,
@@ -387,9 +436,10 @@ if 'drafts_memory' not in st.session_state: st.session_state.drafts_memory = {}
 if 'page' not in st.session_state: st.session_state.page = "Dashboard"
 
 # Load Persistent User Preferences, Saved Resume, and Quotas
-if 'config_loaded' not in st.session_state:
-    user_state = load_user_state(st.session_state.user.id)
-    st.session_state.input_location = user_state.get('target_location', "Mid-sized accounting firms in Rochester NY")
+if 'config_loaded' not in st.session_state or not st.session_state.config_loaded:
+    user_email_str = getattr(st.session_state.user, 'email', '') or ""
+    user_state = load_user_state(st.session_state.user.id, user_email_str)
+    st.session_state.input_location = user_state.get('target_location', "Mid-sized accounting firms in New York NY")
     st.session_state.input_role = user_state.get('target_role', "Audit Intern")
     st.session_state.input_num = user_state.get('leads_to_generate', 5)
     st.session_state.tier = user_state.get('tier', 'free')
@@ -397,6 +447,20 @@ if 'config_loaded' not in st.session_state:
     st.session_state.resume_text = user_state.get('resume_text', "")
     st.session_state.resume_filename = user_state.get('resume_filename', "")
     st.session_state.redeemed_codes = user_state.get('redeemed_codes', [])
+    
+    # Absolute Owner Enforcement
+    is_owner_account = False
+    if OWNER_EMAIL and user_email_str and user_email_str.strip().lower() == str(OWNER_EMAIL).strip().lower():
+        is_owner_account = True
+    elif "IMTHEOWNER" in [c.upper() for c in st.session_state.redeemed_codes]:
+        is_owner_account = True
+    elif OWNER_KEY and str(OWNER_KEY).strip().upper() in [c.upper() for c in st.session_state.redeemed_codes]:
+        is_owner_account = True
+        
+    if is_owner_account:
+        st.session_state.tier = "owner"
+        st.session_state.credits_remaining = 999999
+        
     st.session_state.config_loaded = True
 
 # --- Core Functions ---
@@ -996,8 +1060,13 @@ if st.sidebar.button("About", key="nav_about", type="primary" if st.session_stat
 
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 if st.sidebar.button("Logout", key="nav_logout", type="secondary", use_container_width=True):
-    supabase.auth.sign_out()
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
     st.session_state.user = None
+    st.session_state.session = None
+    st.session_state.config_loaded = False
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -1088,12 +1157,14 @@ if st.session_state.page == "Dashboard":
                     with c_btn:
                         if st.button("Apply Key", key="dash_apply_btn", type="primary" if is_free_or_zero else "secondary", use_container_width=True):
                             redeemed_list = [c.upper() for c in st.session_state.get('redeemed_codes', [])]
-                            if dash_code in redeemed_list:
+                            is_owner_code = (dash_code == "IMTHEOWNER" or (OWNER_KEY and dash_code == str(OWNER_KEY).strip().upper()))
+                            if dash_code in redeemed_list and not is_owner_code:
                                 st.error(f"❌ The code '{dash_code}' has already been redeemed for this account. Each code can only be used once.")
                             else:
                                 is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(dash_code, str(st.session_state.user.email))
                                 if is_val:
-                                    redeemed_list.append(dash_code)
+                                    if dash_code not in redeemed_list:
+                                        redeemed_list.append(dash_code)
                                     st.session_state.redeemed_codes = redeemed_list
                                     if add_tier == "owner":
                                         st.session_state.tier = "owner"
@@ -1581,12 +1652,14 @@ elif st.session_state.page == "Pricing & Plans":
         with btn_col:
             if st.button("Redeem Code", use_container_width=True):
                 redeemed_list = [c.upper() for c in st.session_state.get('redeemed_codes', [])]
-                if promo_code in redeemed_list:
+                is_owner_code = (promo_code == "IMTHEOWNER" or (OWNER_KEY and promo_code == str(OWNER_KEY).strip().upper()))
+                if promo_code in redeemed_list and not is_owner_code:
                     st.error(f"❌ The code '{promo_code}' has already been redeemed for this account. Each code can only be used once.")
                 else:
                     is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(promo_code, str(st.session_state.user.email))
                     if is_val:
-                        redeemed_list.append(promo_code)
+                        if promo_code not in redeemed_list:
+                            redeemed_list.append(promo_code)
                         st.session_state.redeemed_codes = redeemed_list
                         if add_tier == "owner":
                             st.session_state.tier = "owner"
