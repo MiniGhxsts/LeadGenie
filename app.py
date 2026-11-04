@@ -221,29 +221,12 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
         return False, f"License server verification error: {e}", 0, "free"
 
 # --- AI Engine Quota & Health Monitoring ---
-@st.cache_data(ttl=120)
 def check_gemini_quota_status():
     if not GEMINI_API_KEY or not ai_client:
         return "MISSING_KEY", "AI engine key is not configured.", "🔴"
-    try:
-        test_resp = ai_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents="Say OK."
-        )
-        if test_resp and test_resp.text:
-            return "OPERATIONAL", "AI engine is operational and quota is active.", "🟢"
-        return "DEGRADED", "AI engine responded with empty output.", "🟡"
-    except Exception as e:
-        err_str = str(e).lower()
-        if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
-            return "QUOTA_EXHAUSTED", "AI synthesis engine has exhausted its usage credits or rate limit (429).", "🔴"
-        elif "billing" in err_str or "credit" in err_str:
-            return "BILLING_REQUIRED", "AI cloud billing account requires active credits or payment method.", "🔴"
-        elif "api_key" in err_str or "403" in err_str or "permission" in err_str:
-            return "INVALID_KEY", "AI engine key is invalid or unauthorized.", "🔴"
-        elif "503" in err_str or "unavailable" in err_str:
-            return "HIGH_DEMAND", "AI engine is temporarily experiencing high server demand (503).", "🟡"
-        return "ERROR", f"AI engine error: {str(e)[:60]}", "🔴"
+    if st.session_state.get('ai_quota_depleted', False):
+        return "QUOTA_EXHAUSTED", "AI synthesis engine quota limit reached.", "🔴"
+    return "OPERATIONAL", "AI engine is operational.", "🟢"
 
 # --- Authentication Gate (Paid Members Only) ---
 if 'user' not in st.session_state:
