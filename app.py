@@ -9,8 +9,9 @@ import zipfile
 import io
 import PyPDF2
 import re
+import html
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, unquote
 from dotenv import load_dotenv
 from google import genai
 from email.message import EmailMessage
@@ -454,6 +455,16 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     time.sleep(1.5)
     return match_score
 
+def decode_cloudflare_email(cf_hex):
+    """
+    Decodes Cloudflare XOR-obfuscated email address strings (/cdn-cgi/l/email-protection#... or data-cfemail).
+    """
+    try:
+        k = int(cf_hex[:2], 16)
+        return ''.join([chr(int(cf_hex[i:i+2], 16) ^ k) for i in range(2, len(cf_hex), 2)])
+    except Exception:
+        return ""
+
 def robust_get(url, headers, depth=0):
     if depth > 2: return None, None 
     try:
@@ -509,6 +520,7 @@ def get_hr_contact(website_url, search_query):
         if not response: return "Not Found", "Not Found"
         
         working_url = response.url
+        site_domain = urlparse(working_url).netloc.replace('www.', '').lower()
         urls_to_scrape = [working_url]
         target_keywords = ['team', 'about', 'contact', 'people', 'staff', 'directory', 'careers', 'professionals', 'leadership', 'our-team', 'recruiter', 'resources', 'center', 'locations']
         
@@ -554,31 +566,58 @@ def get_hr_contact(website_url, search_query):
                 
         urls_to_scrape.extend(sub_profile_links)
         
+        raw_emails = []
         combined_raw_text = ""
         for url in urls_to_scrape:
             try:
                 page_resp, page_soup = robust_get(url, headers)
                 if not page_resp: continue
-                combined_raw_text += " " + page_resp.text + " "
+                raw_html = page_resp.text
+                unescaped_html = html.unescape(raw_html)
+                
+                # 1. Cloudflare XOR Obfuscation detection
+                cf_hex_matches = set(re.findall(r'/cdn-cgi/l/email-protection#([a-fA-F0-9]+)', raw_html) + 
+                                     re.findall(r'data-cfemail=["\']([a-fA-F0-9]+)["\']', raw_html))
+                for h in cf_hex_matches:
+                    dec = decode_cloudflare_email(h)
+                    if dec and '@' in dec:
+                        raw_emails.append(dec)
+                        combined_raw_text += f" {dec} "
+                        
+                # 2. Mailto link detection (decodes %40, %20, etc.)
+                for m in re.findall(r'mailto:([^\s"\'?>]+)', raw_html, re.IGNORECASE):
+                    clean_m = unquote(m).split('?')[0].strip()
+                    if '@' in clean_m:
+                        raw_emails.append(clean_m)
+                        combined_raw_text += f" {clean_m} "
+                        
+                # 3. HTML Entity / Regex Email Detection
+                combined_raw_text += " " + unescaped_html + " "
                 combined_raw_text += " " + page_soup.get_text(separator=' ', strip=True) + " "
+                
+                email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
+                raw_emails.extend(re.findall(email_pattern, unescaped_html))
             except Exception:
                 continue
                 
-        email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
-        raw_emails = list(set(re.findall(email_pattern, combined_raw_text)))
-        
         if not raw_emails: return "Not Found", "Not Found"
             
         text_lower = combined_raw_text.lower()
         email_scores = {}
         
-        for raw_email in raw_emails:
+        for raw_email in set(raw_emails):
             email = raw_email.lower().strip()
             
-            if any(email.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.js', '.css', '.woff']):
+            if any(email.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.js', '.css', '.woff', '.ttf']):
+                continue
+            if '@' not in email or '.' not in email.split('@')[-1]:
                 continue
             
-            score = 0
+            score = 10
+            
+            # Domain match bonus: high priority for firm's own domain
+            if site_domain and site_domain in email:
+                score += 150
             
             if any(kw in email for kw in ['contact', 'info', 'hello', 'admin', 'inquiries', 'support']):
                 score += 200
@@ -587,16 +626,16 @@ def get_hr_contact(website_url, search_query):
                 score += 100
                 
             try:
-                idx = text_lower.index(raw_email.lower())
+                idx = text_lower.index(email)
                 start_idx = max(0, idx - 150)
-                end_idx = min(len(text_lower), idx + len(raw_email) + 150)
+                end_idx = min(len(text_lower), idx + len(email) + 150)
                 window = text_lower[start_idx:end_idx]
                 
                 for word in hint_words:
                     if word in window:
                         score += 30
                         
-                if any(title in window for title in ['partner', 'director', 'manager', 'acquisition', 'principal', 'president', 'consultant', 'specialist', 'administrator', 'advisor']):
+                if any(title in window for title in ['partner', 'director', 'manager', 'acquisition', 'principal', 'president', 'consultant', 'specialist', 'administrator', 'advisor', 'founder', 'owner']):
                     score += 20
                     
             except ValueError:
@@ -611,7 +650,15 @@ def get_hr_contact(website_url, search_query):
         if any(kw in best_email for kw in ['contact', 'info', 'hello', 'admin', 'inquiries', 'hr@', 'careers@', 'talent@', 'recruiting@', 'recruiter@']):
             contact_name = "Hiring Team"
         else:
-            contact_name = "Employee Contact"
+            prefix = best_email.split('@')[0]
+            if '.' in prefix:
+                parts = prefix.split('.')
+                if len(parts) == 2 and all(p.isalpha() and len(p) > 1 for p in parts):
+                    contact_name = f"{parts[0].capitalize()} {parts[1].capitalize()}"
+                else:
+                    contact_name = "Hiring Team"
+            else:
+                contact_name = "Hiring Team"
                 
         return contact_name, best_email
         
