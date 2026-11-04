@@ -788,6 +788,32 @@ if st.session_state.page == "Dashboard":
                     </div>
                 """, unsafe_allow_html=True)
             
+            # Quick-Activation Box for existing users on the Free tier
+            if st.session_state.tier == 'free':
+                with st.expander("🔑 Have a License Key or want to claim 300 VIP Leads?", expanded=True):
+                    st.markdown("Enter `GENIE-VIP` below to instantly upgrade this existing account to 300 leads:")
+                    c_code, c_btn = st.columns([3, 1])
+                    with c_code:
+                        dash_code = st.text_input("License Key", value="GENIE-VIP", key="dash_promo_code", label_visibility="collapsed").strip().upper()
+                    with c_btn:
+                        if st.button("Apply", key="dash_apply_btn", use_container_width=True):
+                            is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(dash_code, str(st.session_state.user.email))
+                            if is_val:
+                                st.session_state.credits_remaining = add_credits
+                                st.session_state.tier = add_tier
+                                try:
+                                    supabase.table('user_profiles').update({
+                                        'credits_remaining': st.session_state.credits_remaining,
+                                        'tier': add_tier
+                                    }).eq('user_id', st.session_state.user.id).execute()
+                                except Exception:
+                                    pass
+                                st.success(f"🎉 Upgraded! You now have {add_credits} Leads ({add_tier.upper()}).")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {msg}")
+
             search_query = st.text_input("Target Location & Industry", value=st.session_state.input_location)
             
             col_inner1, col_inner2 = st.columns(2)
