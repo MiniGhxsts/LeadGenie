@@ -174,8 +174,12 @@ def verify_lemon_squeezy_license(license_key, user_email=""):
     
     clean_key = key.upper()
     
-    # 1. Master Owner VIP Key (Permanent Infinite Access + AI Unlocked)
-    if clean_key == "REDACTED_KEY":
+    # 1. Master Owner VIP Key (Loaded securely from secrets / environment)
+    configured_owner_key = os.getenv("OWNER_KEY")
+    if not configured_owner_key and hasattr(st, "secrets") and "OWNER_KEY" in st.secrets:
+        configured_owner_key = st.secrets["OWNER_KEY"]
+
+    if configured_owner_key and clean_key == str(configured_owner_key).strip().upper():
         return True, "👑 Owner VIP Verified! Infinite Unlimited Access & Neural AI Engine Activated.", 999999, "owner"
         
     # 2. Promo Code for Job Hunter Pack ($10 - 100 Leads, Standard Templates)
