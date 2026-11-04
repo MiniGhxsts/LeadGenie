@@ -11,6 +11,7 @@ token.json
 
 # Generated drafts & exports
 Email_Drafts/
+user_storage/
 *.eml
 *.zip
 *.xlsx
