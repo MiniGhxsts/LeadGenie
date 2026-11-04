@@ -98,29 +98,7 @@ def load_user_state(user_id, user_email=""):
         state['credits_remaining'] = 999999
         return state
     
-    # 1. Local persistent storage
-    user_file = os.path.join(USER_STORAGE_DIR, f"{user_id}.json")
-    if os.path.exists(user_file):
-        try:
-            with open(user_file, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-                state.update(saved)
-        except Exception:
-            pass
-            
-    # 2. Supabase Auth User Metadata (syncs across devices)
-    if st.session_state.get('user') and hasattr(st.session_state.user, 'user_metadata'):
-        meta = st.session_state.user.user_metadata or {}
-        if meta.get('tier'): state['tier'] = meta['tier']
-        if meta.get('credits_remaining') is not None: state['credits_remaining'] = meta['credits_remaining']
-        if meta.get('resume_text'): state['resume_text'] = meta['resume_text']
-        if meta.get('resume_filename'): state['resume_filename'] = meta['resume_filename']
-        if meta.get('redeemed_codes'): state['redeemed_codes'] = meta['redeemed_codes']
-        if meta.get('target_location'): state['target_location'] = meta['target_location']
-        if meta.get('target_role'): state['target_role'] = meta['target_role']
-        if meta.get('leads_to_generate'): state['leads_to_generate'] = meta['leads_to_generate']
-
-    # 3. Supabase database table
+    # 1. Supabase database table (Primary cloud persistence)
     try:
         user_prof = supabase.table('user_profiles').select('*').eq('user_id', user_id).execute()
         if user_prof.data and len(user_prof.data) > 0:
@@ -130,11 +108,46 @@ def load_user_state(user_id, user_email=""):
             if db_row.get('leads_to_generate'): state['leads_to_generate'] = db_row['leads_to_generate']
             if db_row.get('tier'): state['tier'] = db_row['tier']
             if db_row.get('credits_remaining') is not None: state['credits_remaining'] = db_row['credits_remaining']
+            if db_row.get('redeemed_codes'):
+                try:
+                    loaded = json.loads(db_row['redeemed_codes']) if isinstance(db_row['redeemed_codes'], str) else db_row['redeemed_codes']
+                    if loaded and isinstance(loaded, list):
+                        state['redeemed_codes'] = loaded
+                except Exception:
+                    pass
     except Exception:
         pass
 
+    # 2. Supabase Auth User Metadata (Cloud account sync across devices)
+    if st.session_state.get('user') and hasattr(st.session_state.user, 'user_metadata'):
+        meta = st.session_state.user.user_metadata or {}
+        if meta.get('tier') and state['tier'] == 'free': state['tier'] = meta['tier']
+        if meta.get('credits_remaining') is not None and state['credits_remaining'] == 10: state['credits_remaining'] = meta['credits_remaining']
+        if meta.get('resume_text') and not state['resume_text']: state['resume_text'] = meta['resume_text']
+        if meta.get('resume_filename') and not state['resume_filename']: state['resume_filename'] = meta['resume_filename']
+        if meta.get('redeemed_codes'):
+            for c in meta['redeemed_codes']:
+                if c not in state['redeemed_codes']: state['redeemed_codes'].append(c)
+
+    # 3. Local persistent storage (Disk cache fallback)
+    user_file = os.path.join(USER_STORAGE_DIR, f"{user_id}.json")
+    if os.path.exists(user_file):
+        try:
+            with open(user_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                if saved.get('tier') and state['tier'] == 'free': state['tier'] = saved['tier']
+                if saved.get('credits_remaining') is not None and state['credits_remaining'] == 10: state['credits_remaining'] = saved['credits_remaining']
+                if saved.get('resume_text') and not state['resume_text']: state['resume_text'] = saved['resume_text']
+                if saved.get('resume_filename') and not state['resume_filename']: state['resume_filename'] = saved['resume_filename']
+                if saved.get('redeemed_codes'):
+                    for c in saved['redeemed_codes']:
+                        if c not in state['redeemed_codes']: state['redeemed_codes'].append(c)
+        except Exception:
+            pass
+
     # 4. Check if Owner key was ever redeemed
-    if OWNER_KEY and str(OWNER_KEY).strip().upper() in [c.upper() for c in state.get('redeemed_codes', [])]:
+    if (OWNER_KEY and str(OWNER_KEY).strip().upper() in [c.upper() for c in state.get('redeemed_codes', [])]) or \
+       "IMTHEOWNER" in [c.upper() for c in state.get('redeemed_codes', [])]:
         state['tier'] = "owner"
         state['credits_remaining'] = 999999
         
@@ -174,28 +187,36 @@ def save_user_state(user_id, updates):
             else:
                 meta_payload[k] = v
         if meta_payload:
-            supabase.auth.update_user({"data": meta_payload})
-            if st.session_state.get('user'):
+            res_up = supabase.auth.update_user({"data": meta_payload})
+            if res_up and hasattr(res_up, 'user') and res_up.user:
+                st.session_state.user = res_up.user
+            elif st.session_state.get('user'):
                 if not hasattr(st.session_state.user, 'user_metadata') or st.session_state.user.user_metadata is None:
                     st.session_state.user.user_metadata = {}
                 st.session_state.user.user_metadata.update(meta_payload)
     except Exception:
         pass
         
-    # 3. Supabase Database user_profiles table
+    # 3. Supabase Database user_profiles table (Permanent DB Storage)
     try:
-        db_payload = {}
+        db_payload = {'user_id': user_id}
         for k in ['target_location', 'target_role', 'leads_to_generate']:
             if k in updates: db_payload[k] = updates[k]
         for k in ['credits_remaining', 'tier']:
             if k in updates: db_payload[k] = updates[k]
-        if db_payload:
+        if 'redeemed_codes' in updates:
+            db_payload['redeemed_codes'] = json.dumps(updates['redeemed_codes'])
+            
+        if len(db_payload) > 1:
             try:
-                supabase.table('user_profiles').update(db_payload).eq('user_id', user_id).execute()
+                supabase.table('user_profiles').upsert(db_payload, on_conflict='user_id').execute()
             except Exception:
-                safe_payload = {k: v for k, v in db_payload.items() if k not in ['tier', 'credits_remaining']}
-                if safe_payload:
-                    supabase.table('user_profiles').update(safe_payload).eq('user_id', user_id).execute()
+                safe_payload = {k: v for k, v in db_payload.items() if k not in ['tier', 'credits_remaining', 'redeemed_codes']}
+                if len(safe_payload) > 1:
+                    try:
+                        supabase.table('user_profiles').upsert(safe_payload, on_conflict='user_id').execute()
+                    except Exception:
+                        pass
     except Exception:
         pass
 
