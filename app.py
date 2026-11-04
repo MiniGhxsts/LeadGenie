@@ -372,6 +372,47 @@ def extract_resume_text(uploaded_file):
     else:
         return uploaded_file.read().decode("utf-8")
 
+def calculate_firm_match_score(firm_name, location, target_role, resume_text, status_ui=None):
+    """
+    Calculates candidate alignment score (% match with company values, profile, and role based on resume).
+    Runs for EVERY firm, regardless of whether a direct contact email was found.
+    """
+    if not ai_client or not resume_text or st.session_state.get('ai_quota_depleted', False):
+        return "N/A"
+        
+    prompt = f"""
+    You are an executive talent recruiter evaluating candidate-company alignment.
+    Analyze how well the candidate aligns with the company profile, values, industry, and the role of {target_role} at {firm_name} near {location}.
+
+    Candidate Resume:
+    {resume_text[:4000]}
+
+    Evaluate the % match between the candidate's background/skills and this company's profile and values for this role.
+    Reply with ONLY an integer number from 1 to 100 representing the percentage match score (e.g. 88%).
+    Do not include any words, explanations, or extra punctuation.
+    """
+    for attempt in range(2):
+        try:
+            resp = ai_client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            text = resp.text.strip()
+            digits = re.findall(r'\b\d{1,3}\b', text)
+            if digits:
+                score_num = int(digits[0])
+                if 1 <= score_num <= 100:
+                    return f"{score_num}%"
+            if "%" in text:
+                return text[:6]
+            return f"{text[:4]}%"
+        except Exception as e:
+            err_str = str(e).lower()
+            if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str or "billing" in err_str:
+                st.session_state.ai_quota_depleted = True
+                if status_ui:
+                    status_ui.warning("🚨 AI Quota / Usage Credits Depleted! Pausing AI match scoring.")
+                return "N/A"
+            time.sleep(1)
+    return "N/A"
+
 def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume_text, user_id=None, status_ui=None):
     if hr_email in ["Not Found", "Error", "API Overload", "N/A"]: return "N/A"
 
@@ -390,13 +431,13 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     
     if has_ai_access and resume_text and ai_client and not st.session_state.get('ai_quota_depleted', False):
         prompt = f"""
-        You are an expert technical recruiter analyzing a candidate for a {target_role} role at {firm_name} near {location}.
-        Based on the resume below:
-        1. Give a 'Match Score' from 1-100 evaluating how well the candidate's skills fit this specific role.
-        2. Write a professional cold email body (under 150 words) inquiring about the {target_role} position. Weave in 1 or 2 relevant skills from the resume. DO NOT include a subject line or greeting. Mention the attached resume. Sign off with "Best regards, [Your Name]".
+        You are an expert recruiter evaluating candidate-company alignment for a {target_role} role at {firm_name} near {location}.
+        Based on the candidate's resume:
+        1. Give a 'Match Score' from 1-100% evaluating how well the candidate's skills and background match the company's profile and company values.
+        2. Write a professional cold email body (under 150 words) inquiring about the {target_role} position. Weave in 1 or 2 relevant skills from the resume that demonstrate alignment with company values. DO NOT include a subject line or greeting. Mention the attached resume. Sign off with "Best regards, [Your Name]".
         
         Reply strictly in this format:
-        SCORE: [Insert Number]
+        SCORE: [Insert Number]%
         BODY:
         [Insert Email Body]
         
@@ -410,7 +451,12 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
                 response_text = ai_response.text.strip()
                 if "SCORE:" in response_text and "BODY:" in response_text:
                     parts = response_text.split("BODY:")
-                    match_score = parts[0].replace("SCORE:", "").strip()
+                    raw_score = parts[0].replace("SCORE:", "").strip()
+                    digits = re.findall(r'\b\d{1,3}\b', raw_score)
+                    if digits and 1 <= int(digits[0]) <= 100:
+                        match_score = f"{digits[0]}%"
+                    else:
+                        match_score = raw_score if "%" in raw_score else f"{raw_score}%"
                     body = f"{greeting}\n\n{parts[1].strip()}"
                 else:
                     body = f"{greeting}\n\n{response_text}"
@@ -1091,30 +1137,9 @@ if st.session_state.page == "Dashboard":
         
         ai_telemetry_card = ""
         if st.session_state.tier in ["pro", "owner"]:
-            ai_telemetry_card = f"""
-                <div class="metric-card">
-                    <div class="metric-value" style="font-size: 18px; color:{ai_sidebar_color};">{ai_sidebar_text}</div>
-                    <div class="metric-label">AI Engine Health</div>
-                </div>
-            """
+            ai_telemetry_card = f'<div class="metric-card"><div class="metric-value" style="font-size: 18px; color:{ai_sidebar_color};">{ai_sidebar_text}</div><div class="metric-label">AI Engine Health</div></div>'
 
-        st.markdown(f"""
-            <div style="display: flex; flex-direction: column;">
-                <div class="metric-card">
-                    <div class="metric-value">{total_db_leads}</div>
-                    <div class="metric-label">Aggregated Leads</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-value">{success_count}</div>
-                    <div class="metric-label">Verified Contacts Extracted</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-value">{success_rate}%</div>
-                    <div class="metric-label">Extraction Accuracy Rate</div>
-                </div>
-                {ai_telemetry_card}
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div style="display: flex; flex-direction: column;"><div class="metric-card"><div class="metric-value">{total_db_leads}</div><div class="metric-label">Aggregated Leads</div></div><div class="metric-card"><div class="metric-value">{success_count}</div><div class="metric-label">Verified Contacts Extracted</div></div><div class="metric-card"><div class="metric-value">{success_rate}%</div><div class="metric-label">Extraction Accuracy Rate</div></div>{ai_telemetry_card}</div>""", unsafe_allow_html=True)
 
         # AI Health diagnostic trigger (Only for Pro Career Hunter & Owner tiers)
         if st.session_state.tier in ["pro", "owner"]:
@@ -1213,14 +1238,24 @@ if st.session_state.page == "Dashboard":
                     
                     hr_name, hr_email = get_hr_contact(website, search_query)
                     
+                    has_ai = (st.session_state.tier in ["pro", "owner"])
+                    has_resume = bool(st.session_state.resume_text.strip())
+                    
                     if hr_email in ["Not Found", "Error", "API Overload", "N/A"]:
                         notes, hr_name, hr_email = "Requires manual website submission.", "Not Found", "Not Found"
-                        match_score = "N/A"
+                        
+                        # Company Values & Resume Match Score is generated for EVERY firm!
+                        if not has_resume:
+                            match_score = "N/A (No Resume)"
+                        elif not has_ai:
+                            match_score = "🔒 Pro Feature"
+                        else:
+                            status_ui.info(f"AI evaluating company values & candidate match for: {name}...")
+                            match_score = calculate_firm_match_score(name, city_location, target_role, st.session_state.resume_text, status_ui=status_ui)
                     else:
                         notes = ""
-                        has_ai = (st.session_state.tier in ["pro", "owner"])
                         if has_ai:
-                            status_ui.info(f"AI synthesizing personalized outreach for: {name}...")
+                            status_ui.info(f"AI synthesizing personalized outreach & company values match for: {name}...")
                         else:
                             status_ui.info(f"Synthesizing standard outreach for: {name} (Upgrade to Pro for AI Personalization)...")
                         progress_bar.progress(min(1.0, (processed + 0.6) / num_leads))
@@ -1290,6 +1325,7 @@ elif st.session_state.page == "Lead Database":
         
         ui_df.columns = ["Firm Name", "Location", "Website", "Contact Name", "Email", "Status", "Notes", "Match Score"]
         
+        st.caption("🎯 **Company Values Match Score:** Neural AI evaluates how well your resume matches the firm's company values, industry, and role for every discovered business.")
         edited_df = st.data_editor(
             ui_df,
             use_container_width=True,
@@ -1302,30 +1338,34 @@ elif st.session_state.page == "Lead Database":
                     required=True,
                 ),
                 "Website": st.column_config.LinkColumn("Website"),
-                "Match Score": st.column_config.TextColumn("Match Score", disabled=True),
+                "Match Score": st.column_config.TextColumn("Match Score", help="% match with company values and role based on your resume", disabled=True),
             }
         )
         
         st.markdown("### File Export")
         col1, col2, _ = st.columns([1, 1, 2])
         with col1:
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                edited_df.to_excel(writer, index=False, sheet_name='LeadGenie_CRM')
-                worksheet = writer.sheets['LeadGenie_CRM']
-                
-                for idx, col in enumerate(worksheet.columns, 1):
-                    worksheet.column_dimensions[col[0].column_letter].width = 25
-                
-                worksheet.freeze_panes = 'A2'
-                
-            st.download_button(
-                label="Download CRM (.xlsx)", 
-                data=buffer.getvalue(), 
-                file_name="LeadGenie_Cloud_CRM.xlsx", 
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                use_container_width=True
-            )
+            if st.session_state.tier == "free":
+                if st.button("🔒 Download CRM (.xlsx)", use_container_width=True, help="CRM Excel Export is reserved for paid plans."):
+                    st.warning("🔒 **Paid Plan Feature:** Full Master CRM (.xlsx) Export is unlocked with the **Job Hunter Pack ($10)** or **Pro Career Hunter ($20)**. Head to the **Pricing & Plans** tab to unlock spreadsheet exports!")
+            else:
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    edited_df.to_excel(writer, index=False, sheet_name='LeadGenie_CRM')
+                    worksheet = writer.sheets['LeadGenie_CRM']
+                    
+                    for idx, col in enumerate(worksheet.columns, 1):
+                        worksheet.column_dimensions[col[0].column_letter].width = 25
+                    
+                    worksheet.freeze_panes = 'A2'
+                    
+                st.download_button(
+                    label="Download CRM (.xlsx)", 
+                    data=buffer.getvalue(), 
+                    file_name="LeadGenie_Cloud_CRM.xlsx", 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                    use_container_width=True
+                )
             
         with col2:
             user_key = str(st.session_state.user.id)
@@ -1414,7 +1454,7 @@ elif st.session_state.page == "Pricing & Plans":
                         <div class="pricing-feature">✅ Standard Outreach Email Templates</div>
                         <div class="pricing-feature">✅ Interactive CRM Database</div>
                         <div class="pricing-feature pricing-feature-locked">🔒 Master CRM Export (Paid Only)</div>
-                        <div class="pricing-feature pricing-feature-locked">🔒 AI Match Score (Pro Only)</div>
+                        <div class="pricing-feature pricing-feature-locked">🔒 AI Values Match Score (Pro Only)</div>
                         <div class="pricing-feature pricing-feature-locked">🔒 AI Personalization (Pro Only)</div>
                     </div>
                 </div>
@@ -1462,7 +1502,7 @@ elif st.session_state.page == "Pricing & Plans":
                     <div class="pricing-features">
                         <div class="pricing-feature">✅ <b>200 Lead Searches</b></div>
                         <div class="pricing-feature">✅ <b>⚡ LeadGenie Neural AI Email Personalization</b></div>
-                        <div class="pricing-feature">✅ <b>🎯 AI Resume Match Scoring (1-100)</b></div>
+                        <div class="pricing-feature">✅ <b>🎯 AI Company Values Match Scoring (1-100%)</b></div>
                         <div class="pricing-feature">✅ Highest Priority Deep Web Crawling</div>
                         <div class="pricing-feature">✅ Multi-Metro Outreach Campaigns</div>
                         <div class="pricing-feature">✅ Direct Desktop Mail (.eml) ZIP</div>
@@ -1548,9 +1588,9 @@ elif st.session_state.page == "How to Use & Examples":
         st.markdown("""
         <div class="guide-card">
             <div class="guide-step">Step 2</div>
-            <div class="guide-title">Upload Context</div>
+            <div class="guide-title">Upload Context & Alignment</div>
             <div class="guide-text">
-                Upload your resume in PDF or TXT format. LeadGenie's LLM engine cross-references your background against the scraped profile of each firm, allowing it to weave highly specific details into the email body, proving to the recipient that the outreach is customized.
+                Upload your resume in PDF or TXT format. LeadGenie's neural engine analyzes your background against the company values and industry focus of <b>every single firm</b>, calculating an objective Company Values Match Score (1-100%) and personalizing your outreach.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1564,7 +1604,7 @@ elif st.session_state.page == "How to Use & Examples":
             <div class="guide-step">Step 3</div>
             <div class="guide-title">Execute & Review</div>
             <div class="guide-text">
-                Click 'Execute Pipeline'. The application will dispatch a headless scraper to traverse the domain architecture of the generated leads. The algorithm uses Contextual Proximity Scoring to prioritize decision-maker and HR emails over generic employee inboxes.
+                Click 'Execute Pipeline'. The engine evaluates company values match for all leads, dispatches deep headless domain scraping with Cloudflare de-obfuscation, and synthesizes high-converting personalized email payloads.
             </div>
         </div>
         """, unsafe_allow_html=True)
