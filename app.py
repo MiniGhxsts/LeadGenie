@@ -38,6 +38,9 @@ LEMON_SQUEEZY_PRO_URL = os.getenv("LEMON_SQUEEZY_PRO_URL")
 if not LEMON_SQUEEZY_PRO_URL and "LEMON_SQUEEZY_PRO_URL" in st.secrets:
     LEMON_SQUEEZY_PRO_URL = st.secrets["LEMON_SQUEEZY_PRO_URL"]
 
+# Gemini Model constant
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+
 if GEMINI_API_KEY:
     ai_client = genai.Client(api_key=GEMINI_API_KEY)
 else:
@@ -57,7 +60,93 @@ except Exception:
     st.error("Critical Error: Missing or invalid Supabase credentials in .streamlit/secrets.toml")
     st.stop()
 
-# --- Authentication Gate ---
+# --- License & Verification Engine ---
+def verify_lemon_squeezy_license(license_key, user_email=""):
+    """
+    Validates license keys from Lemon Squeezy, Supabase licenses table, or Admin Master keys.
+    Returns: (is_valid: bool, message: str, credits: int, tier: str)
+    """
+    key = license_key.strip()
+    if not key:
+        return False, "Please enter your Lemon Squeezy License Key or Order ID.", 0, "free"
+    
+    # 1. Admin Master & VIP Testing Keys
+    master_keys = {
+        "GENIE-VIP": (300, "pro"),
+        "FOUNDER-2026": (500, "pro"),
+        "HUNTER-TEST": (100, "pro"),
+        "GENIE100": (100, "pro"),
+        "PRO300": (300, "pro")
+    }
+    if key.upper() in master_keys:
+        credits, tier = master_keys[key.upper()]
+        return True, "Authorized Master Key Verified!", credits, tier
+        
+    # 2. Check Supabase `licenses` table if configured
+    try:
+        lic_res = supabase.table('licenses').select('*').eq('key', key).execute()
+        if lic_res.data and len(lic_res.data) > 0:
+            lic = lic_res.data[0]
+            if lic.get('is_redeemed', False):
+                return False, "This license key has already been redeemed by another user.", 0, "free"
+            credits = lic.get('credits', 100)
+            tier = lic.get('tier', 'pro')
+            try:
+                supabase.table('licenses').update({'is_redeemed': True, 'redeemed_by': user_email}).eq('key', key).execute()
+            except Exception:
+                pass
+            return True, "Supabase License Key Verified!", credits, tier
+    except Exception:
+        pass
+
+    # 3. Call official Lemon Squeezy License Activation API
+    try:
+        res = requests.post(
+            "https://api.lemonsqueezy.com/v1/licenses/activate",
+            data={"license_key": key, "instance_name": f"LeadGenie ({user_email})"},
+            timeout=5
+        )
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("activated"):
+                prod_name = data.get("meta", {}).get("product_name", "").lower()
+                credits = 300 if ("300" in prod_name or "pro" in prod_name) else 100
+                return True, "Lemon Squeezy License Successfully Activated!", credits, "pro"
+        err_msg = res.json().get("error", "License key not found or activation limit reached.")
+        return False, f"License Verification Failed: {err_msg}", 0, "free"
+    except Exception as e:
+        return False, f"License server verification error: {e}", 0, "free"
+
+# --- Gemini Quota & Health Monitoring ---
+@st.cache_data(ttl=120)
+def check_gemini_quota_status():
+    """
+    Actively queries Gemini with a tiny 1-word prompt to detect whether 
+    the API key has valid usage credits or has hit 429 RESOURCE_EXHAUSTED.
+    """
+    if not GEMINI_API_KEY or not ai_client:
+        return "MISSING_KEY", "Gemini API key is not configured.", "🔴"
+    try:
+        test_resp = ai_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents="Say OK."
+        )
+        if test_resp and test_resp.text:
+            return "OPERATIONAL", "Gemini AI is operational and quota is active.", "🟢"
+        return "DEGRADED", "Gemini AI responded with empty output.", "🟡"
+    except Exception as e:
+        err_str = str(e).lower()
+        if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
+            return "QUOTA_EXHAUSTED", "Google Gemini API has exhausted its usage credits or rate limit (429).", "🔴"
+        elif "billing" in err_str or "credit" in err_str:
+            return "BILLING_REQUIRED", "Google Cloud billing account requires active credits or payment method.", "🔴"
+        elif "api_key" in err_str or "403" in err_str or "permission" in err_str:
+            return "INVALID_KEY", "Gemini API key is invalid or unauthorized.", "🔴"
+        elif "503" in err_str or "unavailable" in err_str:
+            return "HIGH_DEMAND", "Gemini AI is temporarily experiencing high server demand (503).", "🟡"
+        return "ERROR", f"Gemini error: {str(e)[:60]}", "🔴"
+
+# --- Authentication Gate (Paid Members Only) ---
 if 'user' not in st.session_state:
     st.session_state.user = None
 
@@ -65,24 +154,80 @@ if st.session_state.user is None:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.title("LeadGenie SaaS")
-        st.markdown("Log in to access your cloud-synced outreach dashboard.")
+        if os.path.exists("logo.png"):
+            st.image("logo.png", use_container_width=True)
+        else:
+            st.title("LeadGenie SaaS")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
         with st.container(border=True):
-            auth_mode = st.radio("Action", ["Login", "Sign Up"], horizontal=True, label_visibility="collapsed")
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
+            auth_mode = st.radio("Access Gate", ["Member Sign In", "Activate Paid License"], horizontal=True)
+            st.markdown("---")
             
-            if st.button("Authenticate", type="primary", use_container_width=True):
-                try:
-                    if auth_mode == "Sign Up":
-                        res = supabase.auth.sign_up({"email": email, "password": password})
-                        st.success("Account created! Please log in to continue.")
-                    else:
+            if auth_mode == "Member Sign In":
+                st.markdown("##### Existing Customer Login")
+                st.caption("Sign in with your registered account credentials.")
+                email = st.text_input("Account Email", key="login_email")
+                password = st.text_input("Password", type="password", key="login_pass")
+                
+                if st.button("Sign In to LeadGenie", type="primary", use_container_width=True):
+                    try:
                         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
                         st.session_state.user = res.user
                         st.rerun()
-                except Exception as e:
-                    st.error(f"Authentication Failed: {e}")
+                    except Exception as e:
+                        st.error(f"Sign In Failed: {e}")
+                        
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.caption("Don't have an account yet? Access is strictly paid. Switch to 'Activate Paid License' above with your Lemon Squeezy order key.")
+                
+            else: # "Activate Paid License"
+                st.markdown("##### Activate Your Paid Membership")
+                st.markdown("LeadGenie is a members-only application. Enter your Lemon Squeezy purchase License Key or Order ID below to create your specialized login.")
+                
+                license_key = st.text_input("Lemon Squeezy License Key / Order ID", placeholder="e.g. XXXXX-XXXXX-XXXXX or GENIE-VIP", key="signup_lic")
+                email = st.text_input("Your Email (used for receipt)", key="signup_email")
+                password = st.text_input("Create Password", type="password", key="signup_pass")
+                
+                if st.button("Verify License & Create Account", type="primary", use_container_width=True):
+                    if not email or not password or not license_key:
+                        st.warning("Please fill in all fields (Email, Password, and License Key).")
+                    else:
+                        is_valid, lic_msg, grant_credits, grant_tier = verify_lemon_squeezy_license(license_key, email)
+                        if is_valid:
+                            try:
+                                res = supabase.auth.sign_up({"email": email, "password": password})
+                                if res.user:
+                                    st.session_state.user = res.user
+                                    # Provision profile with verified paid credits
+                                    try:
+                                        supabase.table('user_profiles').insert({
+                                            'user_id': res.user.id,
+                                            'target_location': "Mid-sized accounting firms in Rochester NY",
+                                            'target_role': "Audit Intern",
+                                            'leads_to_generate': 5,
+                                            'credits_remaining': grant_credits,
+                                            'tier': grant_tier
+                                        }).execute()
+                                    except Exception:
+                                        pass
+                                    st.success(f"🎉 {lic_msg} Your account has been provisioned with {grant_credits} leads!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.info("Account created! Please check your email to confirm registration or sign in.")
+                            except Exception as e:
+                                st.error(f"Registration Error: {e}")
+                        else:
+                            st.error(f"❌ {lic_msg}")
+                            starter_url = LEMON_SQUEEZY_STARTER_URL or "https://lemonsqueezy.com"
+                            st.markdown(f"""
+                                <div style="margin-top:12px; padding:12px; background-color:#FEF2F2; border:1px solid #FCA5A5; border-radius:6px; font-size:13px; color:#991B1B;">
+                                    <b>Need a License?</b> This web app is private and paid. You must purchase an access pass to receive a license key.<br><br>
+                                    <a href="{starter_url}" target="_blank" style="color:#DC2626; font-weight:700; text-decoration:underline;">👉 Purchase Access on Lemon Squeezy ($19)</a>
+                                </div>
+                            """, unsafe_allow_html=True)
     st.stop()
 
 # --- Session State Initialization (Post-Auth) ---
@@ -90,6 +235,7 @@ if 'total_searches' not in st.session_state: st.session_state.total_searches = 0
 if 'successful_emails' not in st.session_state: st.session_state.successful_emails = 0
 if 'show_success_banner' not in st.session_state: st.session_state.show_success_banner = False
 if 'last_processed_count' not in st.session_state: st.session_state.last_processed_count = 0
+if 'ai_quota_depleted' not in st.session_state: st.session_state.ai_quota_depleted = False
 
 if 'resume_text' not in st.session_state: st.session_state.resume_text = "" 
 if 'resume_filename' not in st.session_state: st.session_state.resume_filename = ""
@@ -108,7 +254,6 @@ if 'config_loaded' not in st.session_state:
             st.session_state.input_role = profile.get('target_role', "Audit Intern")
             st.session_state.input_num = profile.get('leads_to_generate', 5)
             
-            # Safe credit loading with 10 free trial credits as default
             raw_credits = profile.get('credits_remaining')
             st.session_state.credits_remaining = int(raw_credits) if raw_credits is not None else 10
             st.session_state.tier = profile.get('tier', 'free')
@@ -128,7 +273,6 @@ if 'config_loaded' not in st.session_state:
                     'tier': 'free'
                 }).execute()
             except Exception:
-                # Fallback if credits_remaining or tier columns are not yet in Supabase schema
                 supabase.table('user_profiles').insert({
                     'user_id': st.session_state.user.id,
                     'target_location': st.session_state.input_location,
@@ -167,7 +311,8 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     body = ""
     match_score = "N/A"
     
-    if resume_text and ai_client:
+    # Check if Gemini AI is active and not already known to be out of quota
+    if resume_text and ai_client and not st.session_state.get('ai_quota_depleted', False):
         prompt = f"""
         You are an expert technical recruiter analyzing a candidate for a {target_role} role at {firm_name} near {location}.
         Based on the resume below:
@@ -183,9 +328,9 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
         {resume_text[:5000]}
         """
         
-        for attempt in range(3):
+        for attempt in range(2):
             try:
-                ai_response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+                ai_response = ai_client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
                 response_text = ai_response.text.strip()
                 if "SCORE:" in response_text and "BODY:" in response_text:
                     parts = response_text.split("BODY:")
@@ -196,11 +341,20 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
                 
                 if status_ui: status_ui.empty()
                 break  
-            except Exception:
-                if status_ui:
-                    status_ui.warning(f"⚠️ Gemini Rate Limit Reached. Pacing backend requests (5s)... (Attempt {attempt+1}/3)")
-                time.sleep(5)
-                body = None
+            except Exception as e:
+                err_str = str(e).lower()
+                # Detect Quota Exhaustion or Billing Limits immediately
+                if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str or "billing" in err_str:
+                    st.session_state.ai_quota_depleted = True
+                    if status_ui:
+                        status_ui.warning("🚨 Gemini AI Quota / Usage Credits Depleted! Falling back to standard high-converting template.")
+                    body = None
+                    break
+                else:
+                    if status_ui:
+                        status_ui.warning(f"⚠️ Gemini Connection: Retrying... ({attempt+1}/2)")
+                    time.sleep(2)
+                    body = None
 
     if not body:
         body = f"""{greeting}\n\nI am writing to express my strong interest in joining {firm_name} as a {target_role}. \n\nGiven your excellent reputation in the {location} area, I would welcome the opportunity to contribute my skills to your team. I have attached my resume for your review.\n\nThank you for your time.\n\nBest regards,\n[Your Name]"""
@@ -222,7 +376,7 @@ def create_eml_draft(firm_name, hr_name, hr_email, location, target_role, resume
     with open(file_path, 'wb') as f:
         f.write(bytes(msg))
         
-    time.sleep(2)
+    time.sleep(1.5)
     return match_score
 
 def robust_get(url, headers, depth=0):
@@ -398,7 +552,6 @@ st.markdown("""
     }
     h1, h2, h3 { color: #111827; font-weight: 600; letter-spacing: -0.015em; }
     
-    /* Elegant Custom Sidebar */
     [data-testid="stSidebar"] {
         background-color: #F3F4F6 !important;
         border-right: 1px solid #E5E7EB;
@@ -411,7 +564,7 @@ st.markdown("""
         color: #4B5563 !important;
         text-transform: uppercase !important;
         letter-spacing: 0.1em !important;
-        margin: 20px 0 10px 14px !important;
+        margin: 16px 0 8px 14px !important;
     }
     
     ::-webkit-scrollbar {
@@ -466,14 +619,14 @@ st.markdown("""
     
     .metric-card {
         background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px;
-        padding: 20px; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); margin-bottom: 12px;
+        padding: 18px; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); margin-bottom: 12px;
     }
-    .metric-value { font-size: 32px; font-weight: 700; color: #111827; line-height: 1.2; }
+    .metric-value { font-size: 30px; font-weight: 700; color: #111827; line-height: 1.2; }
     .metric-label { font-size: 12px; font-weight: 600; color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
     
     .credit-badge {
         background: linear-gradient(135deg, #1E40AF 0%, #3B82F6 100%);
-        color: white; padding: 12px 18px; border-radius: 8px; margin-bottom: 18px;
+        color: white; padding: 14px 18px; border-radius: 8px; margin-bottom: 18px;
         display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
     }
     
@@ -535,12 +688,34 @@ tier_label = st.session_state.tier.upper() if 'tier' in st.session_state else "F
 credits_val = st.session_state.credits_remaining if 'credits_remaining' in st.session_state else 10
 
 st.sidebar.markdown(f"""
-    <div style="background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; margin: 0 8px 12px 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+    <div style="background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; margin: 0 8px 10px 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <span style="font-size:11px; font-weight:700; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em;">Balance</span>
             <span style="background-color:#DBEAFE; color:#1D4ED8; font-size:10px; font-weight:700; padding:2px 8px; border-radius:12px;">{tier_label}</span>
         </div>
         <div style="font-size: 22px; font-weight: 700; color: #111827; margin: 4px 0;">{credits_val} <span style="font-size:12px; font-weight:500; color:#6B7280;">Leads Left</span></div>
+    </div>
+""", unsafe_allow_html=True)
+
+# Real-Time Gemini AI Quota Indicator in Sidebar
+ai_status_code, ai_status_desc, ai_status_icon = check_gemini_quota_status()
+if st.session_state.get('ai_quota_depleted', False) or ai_status_code in ["QUOTA_EXHAUSTED", "BILLING_REQUIRED"]:
+    ai_sidebar_text = "🔴 AI: Quota Exhausted"
+    ai_sidebar_color = "#DC2626"
+elif ai_status_code == "OPERATIONAL":
+    ai_sidebar_text = "🟢 AI: Operational"
+    ai_sidebar_color = "#059669"
+elif ai_status_code == "HIGH_DEMAND":
+    ai_sidebar_text = "🟡 AI: High Demand Spike"
+    ai_sidebar_color = "#D97706"
+else:
+    ai_sidebar_text = f"{ai_status_icon} AI: {ai_status_code}"
+    ai_sidebar_color = "#DC2626"
+
+st.sidebar.markdown(f"""
+    <div style="background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 10px 12px; margin: 0 8px 14px 8px;">
+        <div style="font-size:10px; font-weight:700; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em;">AI Quota Health</div>
+        <div style="font-size:12px; font-weight:700; color:{ai_sidebar_color}; margin-top:2px;">{ai_sidebar_text}</div>
     </div>
 """, unsafe_allow_html=True)
 
@@ -571,7 +746,7 @@ if st.sidebar.button("Logout", key="nav_logout", type="secondary", use_container
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("v1.1.0 | SaaS Commercial Edition")
+st.sidebar.caption("v1.2.0 | Members-Only Commercial Edition")
 
 
 # --- Page 1: Dashboard ---
@@ -583,6 +758,14 @@ if st.session_state.page == "Dashboard":
     
     st.title("Outreach Dashboard")
     st.markdown("Automate your lead generation pipeline by extracting decision-maker contacts and synthesizing custom outreach files.")
+    
+    # Active Gemini Quota Exhaustion Banner
+    if st.session_state.get('ai_quota_depleted', False) or ai_status_code in ["QUOTA_EXHAUSTED", "BILLING_REQUIRED"]:
+        st.error("""
+            🚨 **Notice to Users & Admin:** The connected Google Gemini AI engine has reached its quota limit or is out of usage credits.
+            * The pipeline will automatically generate structured high-converting template drafts without failing, but AI resume-match personalization is temporarily paused until credits are refilled in [Google AI Studio](https://aistudio.google.com/).
+        """)
+        
     st.caption("ℹ️ **Disclaimer:** LeadGenie actively scans domain architecture for public contact information. Organizations that strictly utilize gated web forms or conceal contact data will be flagged in the database as requiring manual submission.")
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -678,8 +861,25 @@ if st.session_state.page == "Dashboard":
                     <div class="metric-value">{success_rate}%</div>
                     <div class="metric-label">Extraction Accuracy Rate</div>
                 </div>
+                <div class="metric-card">
+                    <div class="metric-value" style="font-size: 18px; color:{ai_sidebar_color};">{ai_sidebar_text}</div>
+                    <div class="metric-label">Gemini AI Quota Health</div>
+                </div>
             </div>
         """, unsafe_allow_html=True)
+
+        # AI Health diagnostic trigger
+        with st.expander("🩺 Test Gemini AI Connection"):
+            if st.button("Run Diagnostic Ping", use_container_width=True):
+                with st.spinner("Pinging Gemini API..."):
+                    try:
+                        t0 = time.time()
+                        ping_res = ai_client.models.generate_content(model=GEMINI_MODEL, contents="Hello")
+                        elapsed = round((time.time() - t0) * 1000)
+                        st.session_state.ai_quota_depleted = False
+                        st.success(f"✅ AI Engine Healthy! Latency: {elapsed}ms. Quota and credits are active.")
+                    except Exception as e:
+                        st.error(f"❌ Connection Failure: {e}")
 
         status_ui = st.empty()
         progress_ui = st.empty()
@@ -919,7 +1119,6 @@ elif st.session_state.page == "Pricing & Plans":
     lemon_user_id = str(st.session_state.user.id)
     lemon_email = str(st.session_state.user.email)
     
-    # Pass user_id and email as checkout URL parameters
     starter_checkout_url = f"{LEMON_SQUEEZY_STARTER_URL}?checkout[custom][user_id]={lemon_user_id}&checkout[email]={lemon_email}" if LEMON_SQUEEZY_STARTER_URL else "https://lemonsqueezy.com"
     pro_checkout_url = f"{LEMON_SQUEEZY_PRO_URL}?checkout[custom][user_id]={lemon_user_id}&checkout[email]={lemon_email}" if LEMON_SQUEEZY_PRO_URL else "https://lemonsqueezy.com"
     
@@ -928,7 +1127,7 @@ elif st.session_state.page == "Pricing & Plans":
     with plan_col1:
         st.markdown("""
             <div class="pricing-card">
-                <div class="pricing-title">Free Trial</div>
+                <div class="pricing-title">Trial Level</div>
                 <div style="color: #6B7280; font-size: 13px; margin-bottom: 8px;">Explore LeadGenie</div>
                 <div class="pricing-price">$0</div>
                 <hr>
@@ -939,7 +1138,7 @@ elif st.session_state.page == "Pricing & Plans":
                 <div class="pricing-feature">✅ Interactive CRM Database</div>
                 <div style="margin-top: auto; padding-top: 20px;">
                     <div style="background-color: #F3F4F6; text-align: center; padding: 10px; border-radius: 6px; font-size: 14px; font-weight: 600; color: #4B5563;">
-                        Included on Sign Up
+                        Current / Base Tier
                     </div>
                 </div>
             </div>
@@ -958,7 +1157,7 @@ elif st.session_state.page == "Pricing & Plans":
                 <div class="pricing-feature">✅ Contextual Resume-Aligned Emails</div>
                 <div class="pricing-feature">✅ Full Master CRM (.xlsx) Export</div>
                 <div class="pricing-feature">✅ Direct Desktop Mail (.eml) ZIP</div>
-                <div class="pricing-feature">✅ No Monthly Subscription Hassle</div>
+                <div class="pricing-feature">✅ Instant License Key Delivery</div>
             </div>
         """, unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
@@ -974,7 +1173,7 @@ elif st.session_state.page == "Pricing & Plans":
                 <div class="pricing-feature">✅ <b>300 Verified Leads</b></div>
                 <div class="pricing-feature">✅ Highest Priority Deep Web Crawling</div>
                 <div class="pricing-feature">✅ Multi-Metro Outreach Campaigns</div>
-                <div class="pricing-feature">✅ Personalized Gemini 1.5 Synthesis</div>
+                <div class="pricing-feature">✅ Gemini 3.5 AI Synthesis</div>
                 <div class="pricing-feature">✅ Lifetime Cloud Access</div>
                 <div class="pricing-feature">✅ VIP Fast-Track Support</div>
             </div>
@@ -986,53 +1185,41 @@ elif st.session_state.page == "Pricing & Plans":
     
     # Instant License / Promo Code Redemption
     with st.expander("🔑 Have a Promo Code or Lemon Squeezy Order #? Click to Redeem", expanded=False):
-        st.markdown("If you completed checkout or received a promotional grant, enter your activation key below to immediately add leads to your account.")
+        st.markdown("If you completed checkout or received an additional promotional grant, enter your activation key below to immediately add leads to your account.")
         code_col, btn_col = st.columns([3, 1])
         with code_col:
-            promo_code = st.text_input("Activation / Promo Key", placeholder="e.g. GENIE100 or Order Ref", label_visibility="collapsed").strip().upper()
+            promo_code = st.text_input("Activation / Promo Key", placeholder="e.g. GENIE-VIP or Order Ref", label_visibility="collapsed").strip().upper()
         with btn_col:
             if st.button("Redeem Code", use_container_width=True):
-                if promo_code in ["GENIE100", "REDACTED", "BETA100"]:
-                    st.session_state.credits_remaining += 100
-                    st.session_state.tier = "pro"
+                is_val, msg, add_credits, add_tier = verify_lemon_squeezy_license(promo_code, str(st.session_state.user.email))
+                if is_val:
+                    st.session_state.credits_remaining += add_credits
+                    st.session_state.tier = add_tier
                     try:
                         supabase.table('user_profiles').update({
                             'credits_remaining': st.session_state.credits_remaining,
-                            'tier': 'pro'
+                            'tier': add_tier
                         }).eq('user_id', st.session_state.user.id).execute()
                     except Exception:
                         pass
-                    st.success("🎉 Activation Successful! +100 Leads added to your balance.")
+                    st.success(f"🎉 {msg} +{add_credits} Leads added to your account!")
                     time.sleep(1)
                     st.rerun()
-                elif promo_code in ["PRO300", "CAREER300"]:
-                    st.session_state.credits_remaining += 300
-                    st.session_state.tier = "pro"
-                    try:
-                        supabase.table('user_profiles').update({
-                            'credits_remaining': st.session_state.credits_remaining,
-                            'tier': 'pro'
-                        }).eq('user_id', st.session_state.user.id).execute()
-                    except Exception:
-                        pass
-                    st.success("🎉 VIP Activation Successful! +300 Leads added to your balance.")
-                    time.sleep(1)
-                    st.rerun()
-                elif promo_code != "":
-                    st.error("Invalid or unverified activation code. Please check your Lemon Squeezy order receipt.")
+                else:
+                    st.error(f"❌ {msg}")
 
     # Lemon Squeezy Configuration Guide for Store Owner
     if not LEMON_SQUEEZY_STARTER_URL:
         with st.expander("⚙️ Admin Setup: How to connect your Lemon Squeezy store"):
             st.markdown("""
             1. Create a free product at [LemonSqueezy.com](https://lemonsqueezy.com).
-            2. Copy your product checkout share URLs.
-            3. Paste them into `.streamlit/secrets.toml` or Streamlit Cloud Secrets:
+            2. Enable **Generate license keys** in product settings.
+            3. Copy your product checkout share URLs.
+            4. Paste them into `.streamlit/secrets.toml` or Streamlit Cloud Secrets:
             ```toml
             LEMON_SQUEEZY_STARTER_URL = "https://yourstore.lemonsqueezy.com/buy/variant-id-100"
             LEMON_SQUEEZY_PRO_URL = "https://yourstore.lemonsqueezy.com/buy/variant-id-300"
             ```
-            Your buttons above will automatically redirect buyers straight to checkout while tagging their user account!
             """)
 
 # --- Page 4: How to Use & Examples ---
